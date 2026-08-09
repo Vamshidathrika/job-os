@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jobos"
+version = "0.1.0"
+description = "Autonomous warm-path job search engine with multi-tenant BYOK support"
+requires-python = ">=3.11"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+
+    # Database
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "sqlalchemy>=2.0.36",
+    "pgvector>=0.3.6",
+
+    # HTTP client
+    "httpx>=0.28.0",
+
+    # LLM routing
+    "litellm>=1.52.0",
+
+    # Composio integration
+    "composio-core>=0.7.0",
+
+    # Encryption
+    "cryptography>=44.0.0",
+
+    # Task orchestration
+    "temporalio>=1.8.0",
+
+    # Utilities
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-multipart>=0.0.12",
+    "tenacity>=9.0.0",
+    "structlog>=24.4.0",
+    "numpy>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "testcontainers[postgres]>=4.8.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.390",
+    "factory-boy>=3.3.0",
+]
+playwright = [
+    "playwright>=1.49.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH", "RUF"]
+ignore = ["E501"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "security: Security-critical tests (RLS, credential leak, etc.)",
+    "integration: Tests requiring database or external services",
+    "e2e: End-to-end workflow tests",
+    "golden_set: Entailment regression baseline tests",
+]

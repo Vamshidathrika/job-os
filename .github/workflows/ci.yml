@@ -1,0 +1,66 @@
+name: JOBOS CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: jobos
+          POSTGRES_PASSWORD: jobos_dev
+          POSTGRES_DB: jobos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      JOBOS_DB_HOST: localhost
+      JOBOS_DB_PORT: 5432
+      JOBOS_DB_USER: jobos
+      JOBOS_DB_PASSWORD: jobos_dev
+      JOBOS_DB_NAME: jobos_test
+      JOBOS_TEST_DB_DSN: postgresql://jobos:jobos_dev@localhost:5432/jobos_test
+      JOBOS_VAULT_KMS_PROVIDER: local
+      JOBOS_ENVIRONMENT: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check jobos/ tests/
+
+      - name: Type Check
+        run: pyright jobos/ --pythonversion 3.12
+
+      - name: Security Tests
+        run: pytest tests/security/ -v --tb=short -x
+
+      - name: Unit Tests
+        run: pytest tests/unit/ -v --tb=short
+
+      - name: Integration Tests
+        run: pytest tests/integration/ -v --tb=short
+
+      - name: E2E Tests
+        run: pytest tests/e2e/ -v --tb=short
+        if: always()

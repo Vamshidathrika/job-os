@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: jobos
+      POSTGRES_PASSWORD: jobos_dev
+      POSTGRES_DB: jobos
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobos"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres-test:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: jobos
+      POSTGRES_PASSWORD: jobos_dev
+      POSTGRES_DB: jobos_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobos"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    ports:
+      - "7233:7233"
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      POSTGRES_USER: jobos
+      POSTGRES_PWD: jobos_dev
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: temporalio/ui:2.31
+    ports:
+      - "8080:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      - temporal
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      JOBOS_DB_HOST: postgres
+      JOBOS_DB_PORT: 5432
+      JOBOS_DB_USER: jobos
+      JOBOS_DB_PASSWORD: jobos_dev
+      JOBOS_DB_NAME: jobos
+      JOBOS_ENVIRONMENT: development
+      JOBOS_DEBUG: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    volumes:
+      - ./jobos:/app/jobos
+    command: uvicorn jobos.api:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  pgdata:
