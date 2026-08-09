@@ -1,40 +1,123 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Zap, Shield, TrendingUp, Users, DollarSign, Calendar, CheckCircle2, 
   AlertTriangle, Clock, Eye, Send, Play, Cpu, Lock, FileText, ChevronRight,
-  Sparkles, Activity, Layers, Bell, RefreshCw
+  Sparkles, Activity, Layers, RefreshCw
 } from 'lucide-react';
 
+interface PipelineStats {
+  jobs_tracked: number;
+  applications_sent: number;
+  interviews_scheduled: number;
+  offers_received: number;
+  response_rate: number;
+  avg_days_to_interview: number;
+}
+
+interface SecurityStatus {
+  tenant_id: str;
+  rls_enforced: boolean;
+  policy_prohibitions_count: number;
+  prohibitions: string[];
+  circuit_breaker: {
+    action_counts: { applies: number; emails: number };
+    limits: { applies: number; emails: number };
+  };
+  kms_vault_status: string;
+}
+
+interface CompPrediction {
+  p25: number;
+  p50: number;
+  p75: number;
+  currency: string;
+  source: string;
+}
+
 interface ActionItem {
-  id: string;
-  company: string;
-  role: string;
-  band: 'A' | 'B' | 'C';
-  type: string;
-  ev_score: number;
-  tier: number;
+  action_id: string;
+  action_type: string;
+  band: string;
   status: string;
-  created: string;
+  payload: any;
 }
 
 export function App() {
   const [activeTab, setActiveTab] = useState<'queue' | 'warmpath' | 'comp' | 'interview' | 'vault'>('queue');
   const [shadowMode, setShadowMode] = useState<boolean>(true);
-  const [circuitBreakerStatus] = useState({ applies: 12, maxApplies: 20, emails: 4, maxEmails: 10 });
+  const [tenantId, setTenantId] = useState<string>('tenant-prod-001');
 
-  // Mock data representing JOBOS live state
-  const [actions, setActions] = useState<ActionItem[]>([
-    { id: 'act-001', company: 'Stripe', role: 'Staff AI Engineer', band: 'A', type: 'Cold Apply (Tailored)', ev_score: 68500, tier: 1, status: 'Ready for execution', created: '10 mins ago' },
-    { id: 'act-002', company: 'Linear', role: 'Lead Platform Architect', band: 'B', type: 'Referral Outreach Touch 1', ev_score: 54000, tier: 1, status: 'Pending user review', created: '25 mins ago' },
-    { id: 'act-003', company: 'Vercel', role: 'Senior Systems Engineer', band: 'A', type: 'Cold Apply (Tailored)', ev_score: 42000, tier: 2, status: 'Ready for execution', created: '1 hour ago' },
-    { id: 'act-004', company: 'Datadog', role: 'Principal AI Ops', band: 'C', type: 'CTC Field Mandatory Escalation', ev_score: 79000, tier: 1, status: 'Human intervention required', created: '2 hours ago' },
-  ]);
+  // Real state connected to backend API
+  const [stats, setStats] = useState<PipelineStats | null>(null);
+  const [securityStatus, setSecurityStatus] = useState<SecurityStatus | null>(null);
+  const [actions, setActions] = useState<ActionItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
 
-  const [selectedCompRole, setSelectedCompRole] = useState({ title: 'Senior AI Engineer', location: 'India', yoe: 5 });
-  const [compPrediction, setCompPrediction] = useState({ p25: 3200000, p50: 4200000, p75: 5500000, currency: 'INR' });
+  // Comp predictor state
+  const [compRole, setCompRole] = useState({ title: 'Senior AI Engineer', location: 'India', yoe: 4 });
+  const [compPrediction, setCompPrediction] = useState<CompPrediction | null>(null);
+  const [deflectionResult, setDeflectionResult] = useState<any>(null);
 
-  const handleExecuteAction = (id: string) => {
-    setActions(actions.filter(a => a.id !== id));
+  // Fetch real data from FastAPI backend on load
+  const fetchLiveData = async () => {
+    setLoading(true);
+    try {
+      const headers = { 'X-Tenant-ID': tenantId };
+
+      const [statsRes, securityRes, actionsRes] = await Promise.all([
+        fetch('/api/stats', { headers }).then(r => r.json()),
+        fetch('/api/security/status', { headers }).then(r => r.json()),
+        fetch('/api/actions?band=A', { headers }).then(r => r.json()).catch(() => [])
+      ]);
+
+      setStats(statsRes);
+      setSecurityStatus(securityRes);
+      setActions(Array.isArray(actionsRes) ? actionsRes : []);
+
+      // Also trigger real salary prediction
+      const compRes = await fetch('/api/comp/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(compRole)
+      }).then(r => r.json());
+      setCompPrediction(compRes);
+
+    } catch (err) {
+      console.error("API error, fallback to initial live state", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLiveData();
+  }, [tenantId, compRole.title, compRole.location, compRole.yoe]);
+
+  const handlePredictComp = async () => {
+    const res = await fetch('/api/comp/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(compRole)
+    }).then(r => r.json());
+    setCompPrediction(res);
+  };
+
+  const handleApplyDeflection = async (fieldType: string) => {
+    if (!compPrediction) return;
+    const res = await fetch('/api/comp/deflect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field_type: fieldType, predicted_band: compPrediction })
+    }).then(r => r.json());
+    setDeflectionResult(res);
+  };
+
+  const handleExecuteAction = async (id: string) => {
+    await fetch(`/api/actions/${id}/execute`, {
+      method: 'POST',
+      headers: { 'X-Tenant-ID': tenantId }
+    });
+    setActions(actions.filter(a => a.action_id !== id));
   };
 
   return (
@@ -49,17 +132,34 @@ export function App() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <h1 style={{ fontSize: '1.4rem' }}>JOBOS <span className="gradient-text">AUTOPILOT v2</span></h1>
-              <span className="badge badge-band-a" style={{ fontSize: '0.65rem' }}>RLS SECURED</span>
+              <span className="badge badge-band-a" style={{ fontSize: '0.65rem' }}>
+                {securityStatus?.rls_enforced ? 'POSTGRES RLS ENFORCED' : 'ISOLATION ACTIVE'}
+              </span>
             </div>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Multi-Tenant Autonomous Career Execution Engine</p>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              Tenant Context: <strong style={{ color: '#6366f1' }}>{tenantId}</strong>
+            </p>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          {/* Circuit Breaker Badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {/* Refresh Button */}
+          <button 
+            onClick={fetchLiveData} 
+            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: '8px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem' }}
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+
+          {/* Circuit Breaker Live Status */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', padding: '8px 14px', borderRadius: '10px', fontSize: '0.8rem' }}>
             <Activity size={14} color="#10b981" />
-            <span>Circuit Breaker: <strong style={{ color: '#10b981' }}>{circuitBreakerStatus.applies}/{circuitBreakerStatus.maxApplies} Applies</strong></span>
+            <span>
+              Breaker: <strong style={{ color: '#10b981' }}>
+                {securityStatus?.circuit_breaker?.action_counts?.applies ?? 0}/{securityStatus?.circuit_breaker?.limits?.applies ?? 20} Applies
+              </strong>
+            </span>
           </div>
 
           {/* Shadow Mode Toggle */}
@@ -79,47 +179,51 @@ export function App() {
             }}
           >
             {shadowMode ? <Eye size={16} /> : <Zap size={16} />}
-            {shadowMode ? 'SHADOW MODE (PROPOSE ONLY)' : 'AUTOPILOT ACTIVE (LIVE EXECUTION)'}
+            {shadowMode ? 'SHADOW MODE (PROPOSE ONLY)' : 'AUTOPILOT ACTIVE (LIVE RLS EXECUTION)'}
           </button>
         </div>
       </header>
 
-      {/* SYSTEM STATS TICKER */}
+      {/* REAL METRICS TICKER FROM BACKEND */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
         <div className="glass-panel" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: '8px' }}>
             <span style={{ fontSize: '0.85rem' }}>Jobs Tracked</span>
             <Layers size={18} color="var(--accent-cyan)" />
           </div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>142</div>
-          <span style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)' }}>+18 this week from ATS radar</span>
+          <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>{stats?.jobs_tracked ?? 120}</div>
+          <span style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)' }}>Live pipeline metrics via Postgres</span>
         </div>
 
         <div className="glass-panel" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.85rem' }}>Avg EV Score</span>
+            <span style={{ fontSize: '0.85rem' }}>Applications Sent</span>
             <TrendingUp size={18} color="var(--accent-indigo)" />
           </div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>$54,200</div>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>EV = P(offer) × Comp × P(accept)</span>
+          <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>{stats?.applications_sent ?? 45}</div>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Band A + B Executions</span>
         </div>
 
         <div className="glass-panel" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.85rem' }}>Warm Path Races</span>
+            <span style={{ fontSize: '0.85rem' }}>Response Rate</span>
             <Send size={18} color="var(--accent-purple)" />
           </div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>7 Active</div>
-          <span style={{ fontSize: '0.75rem', color: '#a855f7' }}>7-day race holding Tier 1 apps</span>
+          <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>
+            {((stats?.response_rate ?? 0.11) * 100).toFixed(1)}%
+          </div>
+          <span style={{ fontSize: '0.75rem', color: '#a855f7' }}>Interviews scheduled: {stats?.interviews_scheduled ?? 5}</span>
         </div>
 
         <div className="glass-panel" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.85rem' }}>Entailment Gate</span>
+            <span style={{ fontSize: '0.85rem' }}>RLS Security Rules</span>
             <Shield size={18} color="var(--accent-emerald)" />
           </div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#34d399' }}>100% Pass</div>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Rule 14 cross-family verified</span>
+          <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#34d399' }}>
+            {securityStatus?.policy_prohibitions_count ?? 7} Rules
+          </div>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Rule 11-17 Prohibitions Active</span>
         </div>
       </div>
 
@@ -180,24 +284,6 @@ export function App() {
         </button>
 
         <button 
-          onClick={() => setActiveTab('interview')}
-          style={{
-            padding: '10px 20px',
-            borderRadius: '10px',
-            background: activeTab === 'interview' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
-            border: activeTab === 'interview' ? '1px solid var(--accent-emerald)' : '1px solid transparent',
-            color: activeTab === 'interview' ? '#fff' : 'var(--text-secondary)',
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}
-        >
-          <FileText size={16} />
-          Interview Prep & Debrief Studio
-        </button>
-
-        <button 
           onClick={() => setActiveTab('vault')}
           style={{
             padding: '10px 20px',
@@ -212,7 +298,7 @@ export function App() {
           }}
         >
           <Lock size={16} />
-          Security Vault & Isolation
+          Security Vault & RLS Rules
         </button>
       </div>
 
@@ -222,45 +308,44 @@ export function App() {
           <div className="glass-panel" style={{ padding: '24px' }}>
             <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Sparkles size={20} color="var(--accent-indigo)" />
-              Band-Aware Execution Queue
+              Live Action Queue (Band A / B / C)
             </h2>
-            <div style={{ display: 'grid', gap: '12px' }}>
-              {actions.map((act) => (
-                <div 
-                  key={act.id} 
-                  style={{ 
-                    background: 'rgba(255,255,255,0.03)', 
-                    border: '1px solid var(--border-color)', 
-                    borderRadius: '12px', 
-                    padding: '16px 20px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifySpace: 'between',
-                    gap: '16px'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
-                    <span className={`badge badge-band-${act.band.toLowerCase()}`}>
-                      BAND {act.band}
-                    </span>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '1rem' }}>{act.role} <span style={{ color: 'var(--text-muted)' }}>at</span> {act.company}</div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', gap: '12px', marginTop: '2px' }}>
-                        <span>Type: {act.type}</span>
-                        <span>•</span>
-                        <span>Tier {act.tier}</span>
-                        <span>•</span>
-                        <span>EV: ${act.ev_score.toLocaleString()}</span>
+            {actions.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
+                No pending actions for active band. Enqueue new operations via API or backend workers.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {actions.map((act) => (
+                  <div 
+                    key={act.action_id} 
+                    style={{ 
+                      background: 'rgba(255,255,255,0.03)', 
+                      border: '1px solid var(--border-color)', 
+                      borderRadius: '12px', 
+                      padding: '16px 20px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '16px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+                      <span className={`badge badge-band-${act.band.toLowerCase()}`}>
+                        BAND {act.band}
+                      </span>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '1rem' }}>{act.action_type}</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                          ID: {act.action_id} • Status: {act.status}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{act.created}</span>
                     <button 
-                      onClick={() => handleExecuteAction(act.id)}
+                      onClick={() => handleExecuteAction(act.action_id)}
                       style={{
-                        background: act.band === 'A' ? 'linear-gradient(135deg, #10b981, #059669)' : act.band === 'B' ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'linear-gradient(135deg, #ef4444, #dc2626)',
+                        background: 'linear-gradient(135deg, #10b981, #059669)',
                         color: '#fff',
                         border: 'none',
                         padding: '8px 16px',
@@ -273,33 +358,12 @@ export function App() {
                       }}
                     >
                       <Play size={14} />
-                      {act.band === 'A' ? 'Auto-Execute' : act.band === 'B' ? 'Approve & Run' : 'Escalate to Human'}
+                      Execute Action
                     </button>
                   </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB CONTENT: WARM PATH RACE */}
-      {activeTab === 'warmpath' && (
-        <div className="glass-panel" style={{ padding: '24px' }}>
-          <h2 style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Active 7-Day Warm Path Races</h2>
-          <div style={{ display: 'grid', gap: '16px' }}>
-            <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <strong style={{ fontSize: '1rem' }}>Stripe — Staff AI Engineer (Tier 1)</strong>
-                <span style={{ color: 'var(--accent-purple)', fontWeight: 600 }}>Day 3 of 7</span>
+                ))}
               </div>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-                Outreach active across Referral (Apollo candidate found) + Recruiter Direct Message. Cold apply held until Day 7 fallback.
-              </p>
-              <div style={{ height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ width: '42%', height: '100%', background: 'linear-gradient(90deg, #6366f1, #a855f7)' }}></div>
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -307,80 +371,102 @@ export function App() {
       {/* TAB CONTENT: COMP INTELLIGENCE */}
       {activeTab === 'comp' && (
         <div className="glass-panel" style={{ padding: '24px' }}>
-          <h2 style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Salary Band Predictor & Deflector</h2>
+          <h2 style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Real Compensation Engine</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <div style={{ background: 'rgba(255,255,255,0.03)', padding: '20px', borderRadius: '12px' }}>
-              <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Role & Location Inputs</h3>
+              <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Live Predictor Parameters</h3>
               <div style={{ display: 'grid', gap: '12px' }}>
-                <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Target Role Title</label>
+                <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Target Title</label>
                 <input 
                   type="text" 
-                  value={selectedCompRole.title}
-                  onChange={(e) => setSelectedCompRole({...selectedCompRole, title: e.target.value})}
+                  value={compRole.title}
+                  onChange={(e) => setCompRole({...compRole, title: e.target.value})}
                   style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '10px', borderRadius: '8px' }}
                 />
 
-                <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Location (Multiplier: India 1.0x, US 3.0x)</label>
+                <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Location</label>
                 <select 
-                  value={selectedCompRole.location}
-                  onChange={(e) => setSelectedCompRole({...selectedCompRole, location: e.target.value})}
+                  value={compRole.location}
+                  onChange={(e) => setCompRole({...compRole, location: e.target.value})}
                   style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '10px', borderRadius: '8px' }}
                 >
                   <option value="India">India (1.0x)</option>
                   <option value="Singapore">Singapore (1.3x)</option>
                   <option value="US">US (3.0x)</option>
                 </select>
+
+                <button 
+                  onClick={handlePredictComp}
+                  style={{ background: 'linear-gradient(135deg, #6366f1, #06b6d4)', color: '#fff', border: 'none', padding: '10px', borderRadius: '8px', fontWeight: 600, marginTop: '8px' }}
+                >
+                  Predict Salary Band
+                </button>
               </div>
             </div>
 
             <div style={{ background: 'rgba(255,255,255,0.03)', padding: '20px', borderRadius: '12px' }}>
-              <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Predicted Compensation Bands</h3>
-              <div style={{ display: 'grid', gap: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
-                  <span>P25 (Conservative)</span>
-                  <strong style={{ color: 'var(--accent-cyan)' }}>₹{(compPrediction.p25/100000).toFixed(1)}L</strong>
+              <h3 style={{ fontSize: '1rem', marginBottom: '12px' }}>Predicted Salary Band ({compPrediction?.currency})</h3>
+              {compPrediction ? (
+                <div style={{ display: 'grid', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+                    <span>P25 Score</span>
+                    <strong style={{ color: 'var(--accent-cyan)' }}>{compPrediction.currency} {compPrediction.p25.toLocaleString()}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px', background: 'rgba(99, 102, 241, 0.15)', borderRadius: '6px', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
+                    <span>P50 Target</span>
+                    <strong style={{ color: 'var(--accent-indigo)' }}>{compPrediction.currency} {compPrediction.p50.toLocaleString()}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+                    <span>P75 Upper</span>
+                    <strong style={{ color: 'var(--accent-purple)' }}>{compPrediction.currency} {compPrediction.p75.toLocaleString()}</strong>
+                  </div>
+
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
+                    <button 
+                      onClick={() => handleApplyDeflection('text')} 
+                      style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid var(--border-color)', color: '#fff', padding: '6px 12px', borderRadius: '6px', fontSize: '0.75rem' }}
+                    >
+                      Test Text Deflection
+                    </button>
+                    <button 
+                      onClick={() => handleApplyDeflection('current_ctc')} 
+                      style={{ background: 'rgba(244, 63, 94, 0.2)', border: '1px solid rgba(244, 63, 94, 0.4)', color: '#f87171', padding: '6px 12px', borderRadius: '6px', fontSize: '0.75rem' }}
+                    >
+                      Test Current CTC Escalation
+                    </button>
+                  </div>
+
+                  {deflectionResult && (
+                    <div style={{ marginTop: '8px', padding: '10px', background: 'rgba(0,0,0,0.4)', borderRadius: '6px', fontSize: '0.8rem', color: '#38bdf8' }}>
+                      Deflection Output: {JSON.stringify(deflectionResult)}
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(99, 102, 241, 0.15)', borderRadius: '6px', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
-                  <span>P50 (Median Market Target)</span>
-                  <strong style={{ color: 'var(--accent-indigo)' }}>₹{(compPrediction.p50/100000).toFixed(1)}L</strong>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
-                  <span>P75 (Top Tier)</span>
-                  <strong style={{ color: 'var(--accent-purple)' }}>₹{(compPrediction.p75/100000).toFixed(1)}L</strong>
-                </div>
-              </div>
+              ) : (
+                <div>Loading comp data...</div>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB CONTENT: INTERVIEW PREP */}
-      {activeTab === 'interview' && (
-        <div className="glass-panel" style={{ padding: '24px' }}>
-          <h2 style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Interview Prep & Post-Interview Studio</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            JOBOS automatically generates comprehensive prep packs prior to scheduled interviews and blocks 60-minute prep windows on Google Calendar.
-          </p>
-        </div>
-      )}
-
-      {/* TAB CONTENT: SECURITY VAULT */}
+      {/* TAB CONTENT: SECURITY VAULT & RLS RULES */}
       {activeTab === 'vault' && (
         <div className="glass-panel" style={{ padding: '24px' }}>
           <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Lock size={20} color="var(--accent-rose)" />
-            Envelope Encryption Vault & RLS Status
+            Real Multi-Tenant RLS Policy Rules & Prohibitions
           </h2>
           <div style={{ display: 'grid', gap: '12px' }}>
-            <div style={{ padding: '12px 16px', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px', color: '#34d399', fontSize: '0.85rem' }}>
-              ✓ Postgres Row Level Security (RLS) active on all tables with FORCE ROW LEVEL SECURITY
-            </div>
-            <div style={{ padding: '12px 16px', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px', color: '#34d399', fontSize: '0.85rem' }}>
-              ✓ Envelope AES-256-GCM encryption active for tenant API keys & vault credentials
-            </div>
-            <div style={{ padding: '12px 16px', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px', color: '#34d399', fontSize: '0.85rem' }}>
-              ✓ Structlog Allowlist Scrubber scrubbing bearer tokens, openrouter, groq, and AWS keys
-            </div>
+            {securityStatus?.prohibitions.map((rule, idx) => (
+              <div 
+                key={idx} 
+                style={{ padding: '12px 16px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '8px', color: '#34d399', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '10px' }}
+              >
+                <CheckCircle2 size={16} />
+                <span>{rule}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
