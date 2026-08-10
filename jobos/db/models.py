@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS people (
     email text,
     email_verified boolean DEFAULT false,
     linkedin_url text,
+    source text,
     tenure_years float,
     shared_context jsonb,
     created_at timestamptz DEFAULT now()

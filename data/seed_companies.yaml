@@ -1,0 +1,39 @@
+# Companies whose public job boards JOBOS polls.
+# ats_type: greenhouse | lever | ashby
+# ats_identifier: the board token in the public URL, e.g.
+#   https://boards-api.greenhouse.io/v1/boards/<ats_identifier>/jobs
+#   https://api.lever.co/v0/postings/<ats_identifier>
+# Edit freely — this is a starting point, not a fixed list.
+companies:
+  - name: Razorpay
+    domain: razorpay.com
+    ats_type: lever
+    ats_identifier: razorpay
+  - name: Zerodha
+    domain: zerodha.com
+    ats_type: lever
+    ats_identifier: zerodha
+  - name: Postman
+    domain: postman.com
+    ats_type: greenhouse
+    ats_identifier: postman
+  - name: Freshworks
+    domain: freshworks.com
+    ats_type: greenhouse
+    ats_identifier: freshworks
+  - name: Hasura
+    domain: hasura.io
+    ats_type: greenhouse
+    ats_identifier: hasura
+  - name: Chargebee
+    domain: chargebee.com
+    ats_type: lever
+    ats_identifier: chargebee
+  - name: Zoho
+    domain: zoho.com
+    ats_type: greenhouse
+    ats_identifier: zoho
+  - name: Swiggy
+    domain: swiggy.com
+    ats_type: lever
+    ats_identifier: swiggy
