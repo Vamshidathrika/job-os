@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -32,23 +33,40 @@ class ActionQueue:
         self.conn = conn
         self.tenant_id = tenant_id
 
-    async def enqueue(self, action_type: str, payload: dict[str, Any], band: str) -> str:
-        """Enqueue an action, returns action_id. Band='A' (auto), 'B' (review queue), 'C' (human only)."""
+    async def enqueue(
+        self,
+        action_type: str,
+        payload: dict[str, Any],
+        band: str,
+        scheduled_for: datetime | None = None,
+    ) -> str:
+        """Enqueue an action, returns action_id. Band='A' (auto), 'B' (review queue), 'C' (human only).
+
+        Args:
+            scheduled_for: When the action becomes eligible. None means now.
+        """
         if band not in VALID_BANDS:
             raise ValueError(f"Invalid band {band!r}; expected one of {VALID_BANDS}")
 
         action_id = await self.conn.fetchval(
             """
-            INSERT INTO action_queue (user_id, action_type, payload, band)
-            VALUES ($1, $2, $3::jsonb, $4)
+            INSERT INTO action_queue (user_id, action_type, payload, band, scheduled_for)
+            VALUES ($1, $2, $3::jsonb, $4, $5)
             RETURNING id
             """,
             uuid.UUID(str(self.tenant_id)),
             action_type,
             json.dumps(payload),
             band,
+            scheduled_for,
         )
-        logger.info("action_enqueued", action_id=str(action_id), band=band, action_type=action_type)
+        logger.info(
+            "action_enqueued",
+            action_id=str(action_id),
+            band=band,
+            action_type=action_type,
+            scheduled_for=scheduled_for.isoformat() if scheduled_for else None,
+        )
         return str(action_id)
 
     async def dequeue_batch(self, band: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -62,8 +80,11 @@ class ActionQueue:
             UPDATE action_queue SET status = 'processing', updated_at = now()
             WHERE id IN (
                 SELECT id FROM action_queue
-                WHERE band = $1 AND status = 'pending'
-                ORDER BY created_at
+                WHERE band = $1
+                  AND status = 'pending'
+                  -- A touch scheduled for day 3 must not go out on day 0.
+                  AND (scheduled_for IS NULL OR scheduled_for <= now())
+                ORDER BY COALESCE(scheduled_for, created_at)
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )

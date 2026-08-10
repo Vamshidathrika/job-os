@@ -16,6 +16,7 @@ TENANT_TABLES = [
     "agent_decisions",
     "tenant_company_universe",
     "action_queue",
+    "warm_path_races",
 ]
 
 

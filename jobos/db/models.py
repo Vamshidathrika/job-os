@@ -241,10 +241,33 @@ CREATE TABLE IF NOT EXISTS action_queue (
     payload jsonb NOT NULL,
     band text NOT NULL,
     status text NOT NULL DEFAULT 'pending',
+    -- When this action becomes eligible to run. NULL means immediately.
+    -- Required for delayed work such as the 3-touch referral sequence,
+    -- whose touches land on day 0, 3 and 6.
+    scheduled_for timestamptz,
     result jsonb,
     error text,
     created_at timestamptz DEFAULT now(),
     updated_at timestamptz DEFAULT now()
+);
+"""
+
+# The 7-day race that holds a high-value application back while warm paths
+# are attempted. One race per (user, job).
+WARM_PATH_RACES_DDL = """
+CREATE TABLE IF NOT EXISTS warm_path_races (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+    job_id uuid REFERENCES jobs(id) ON DELETE CASCADE,
+    status text NOT NULL DEFAULT 'running',
+    channels text[] NOT NULL DEFAULT '{}',
+    started_at timestamptz NOT NULL DEFAULT now(),
+    deadline_at timestamptz NOT NULL,
+    responded_channel text,
+    responded_at timestamptz,
+    resolution text,
+    resolved_at timestamptz,
+    UNIQUE(user_id, job_id)
 );
 """
 
@@ -253,7 +276,12 @@ CREATE TABLE IF NOT EXISTS action_queue (
 # which reject multiple commands.
 ACTION_QUEUE_INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS action_queue_band_status_idx
-    ON action_queue (user_id, band, status, created_at);
+    ON action_queue (user_id, band, status, scheduled_for, created_at);
+"""
+
+WARM_PATH_RACES_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS warm_path_races_status_deadline_idx
+    ON warm_path_races (user_id, status, deadline_at);
 """
 
 ALL_DDL = [
@@ -275,4 +303,6 @@ ALL_DDL = [
     TENANT_COMPANY_UNIVERSE_DDL,
     ACTION_QUEUE_DDL,
     ACTION_QUEUE_INDEX_DDL,
+    WARM_PATH_RACES_DDL,
+    WARM_PATH_RACES_INDEX_DDL,
 ]

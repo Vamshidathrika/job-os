@@ -1,8 +1,10 @@
-"""Unit tests for Warm-Path 7-Day Race Engine."""
+"""Unit tests for the Warm-Path decision matrix.
 
-import pytest
-from jobos.warm_path.decision import should_hold_application, select_fallback_band
-from jobos.warm_path.race import WarmPathRace
+The race engine itself is DB-backed state that spans a week, so it is covered
+in tests/integration/test_warm_path_race.py against a real database.
+"""
+
+from jobos.warm_path.decision import select_fallback_band, should_hold_application
 
 
 def test_should_hold_application_tier1() -> None:
@@ -28,14 +30,3 @@ def test_select_fallback_band_with_responses() -> None:
 def test_select_fallback_band_mid_race() -> None:
     """Mid-race with no responses should be Band B (queue for review)."""
     assert select_fallback_band(days_elapsed=3, warm_responses=0) == "B"
-
-
-@pytest.mark.asyncio
-async def test_warm_path_race_resolve() -> None:
-    """Test race resolution returns valid outcome structure."""
-    race = WarmPathRace(job_id="j-123", tenant_id="t-456", channels=["REFERRAL", "RECRUITER"])
-    result = await race.resolve_race()
-    assert "outcome" in result
-    assert "channel" in result
-    assert "days_elapsed" in result
-    assert result["outcome"] in ("referral_reply", "recruiter_reply", "cold_apply_fallback")
