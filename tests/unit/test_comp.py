@@ -46,3 +46,33 @@ def test_salary_corpus_lookup() -> None:
     corpus = SalaryCorpus()
     result = corpus.lookup(title="Software Engineer", location="India")
     assert result is not None or result is None  # May return None if not in cold start
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["Sydney, Australia", "Minsk, Belarus", "Port Louis, Mauritius", "Bengaluru, India"],
+)
+def test_non_us_locations_are_not_given_the_us_multiplier(location: str) -> None:
+    """A substring test for "us" also fires on Australia/Belarus/Mauritius,
+    tripling comp and pushing those jobs into Tier 1 on inflated EV."""
+    india = predict_salary_band(title="Engineer", location="Bengaluru, India", yoe=5)
+    band = predict_salary_band(title="Engineer", location=location, yoe=5)
+
+    assert band["p50"] == india["p50"]
+
+
+@pytest.mark.parametrize(
+    "location", ["Austin, US", "San Francisco, USA", "United States", "Remote, U.S."]
+)
+def test_us_locations_still_get_the_us_multiplier(location: str) -> None:
+    india = predict_salary_band(title="Engineer", location="Bengaluru, India", yoe=5)
+    band = predict_salary_band(title="Engineer", location=location, yoe=5)
+
+    assert band["p50"] == india["p50"] * 3.0
+
+
+def test_singapore_multiplier() -> None:
+    india = predict_salary_band(title="Engineer", location="Bengaluru, India", yoe=5)
+    band = predict_salary_band(title="Engineer", location="Singapore", yoe=5)
+
+    assert band["p50"] == pytest.approx(india["p50"] * 1.3)

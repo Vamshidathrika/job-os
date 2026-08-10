@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
+import re
 import structlog
 from typing import Any
 
 logger = structlog.get_logger(__name__)
+
+# Cost-of-living multipliers applied to the Indian base bands.
+# Matched on whole tokens, never substrings: a plain `"us" in location`
+# test also fires on "Australia", "Belarus" and "Mauritius", tripling those
+# salaries and pushing the jobs into Tier 1 on inflated expected value.
+LOCATION_MULTIPLIERS: tuple[tuple[frozenset[str], float], ...] = (
+    (frozenset({"singapore", "sg"}), 1.3),
+    (frozenset({"us", "usa", "united states", "u.s.", "u.s.a."}), 3.0),
+)
+
+DEFAULT_LOCATION_MULTIPLIER = 1.0  # India
+
+_TOKEN_RE = re.compile(r"[a-z.]+")
+
+
+def _location_multiplier(location: str) -> float:
+    """Resolve a location string to its cost-of-living multiplier."""
+    text = location.lower()
+    tokens = set(_TOKEN_RE.findall(text))
+
+    for names, multiplier in LOCATION_MULTIPLIERS:
+        # Match a whole token ("us") or a multi-word name ("united states").
+        if tokens & names or any(" " in name and name in text for name in names):
+            return multiplier
+
+    return DEFAULT_LOCATION_MULTIPLIER
 
 
 def predict_salary_band(title: str, location: str, yoe: int) -> dict[str, Any]:
@@ -26,15 +53,8 @@ def predict_salary_band(title: str, location: str, yoe: int) -> dict[str, Any]:
     p25 = base_p50 * 0.8
     p75 = base_p50 * 1.2
     
-    loc_multiplier = 1.0
-    loc_lower = location.lower()
-    
-    if "singapore" in loc_lower:
-        loc_multiplier = 1.3
-    elif "us" in loc_lower or "united states" in loc_lower:
-        loc_multiplier = 3.0
-    # Assume India is default / 1.0
-        
+    loc_multiplier = _location_multiplier(location)
+
     band = {
         "p25": p25 * loc_multiplier,
         "p50": base_p50 * loc_multiplier,

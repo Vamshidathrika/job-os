@@ -1,5 +1,5 @@
 import pytest
-from typing import Any, Dict
+from typing import Any
 
 try:
     from jobos.vault.redaction import redact_data

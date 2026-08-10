@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from jobos.profile.keyword_extractor import extract_target_keywords
 from jobos.profile.optimizer import analyze_profile
 

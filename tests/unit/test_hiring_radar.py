@@ -1,7 +1,7 @@
 """Unit tests for Hiring Radar signal detection."""
 
 import pytest
-from jobos.hiring_radar import HiringSignal, SignalType, scan_funding_rss
+from jobos.hiring_radar import SignalType, scan_funding_rss
 
 
 @pytest.mark.asyncio

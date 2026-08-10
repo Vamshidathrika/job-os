@@ -13,6 +13,9 @@ from .signals import HiringSignal, SignalType
 
 logger = structlog.get_logger(__name__)
 
+# Terms that mark an RSS item as a funding announcement.
+FUNDING_KEYWORDS = ("raises", "raised", "funding", "series", "seed round", "led by")
+
 
 async def scan_funding_rss(feed_url_or_xml: str) -> list[HiringSignal]:
     """
@@ -41,7 +44,11 @@ async def scan_funding_rss(feed_url_or_xml: str) -> list[HiringSignal]:
             desc_elem = item.find("description")
             desc = desc_elem.text if desc_elem is not None and desc_elem.text else ""
 
-            if "raises" in title.lower() or "funding" in title.lower() or "series" in title.lower():
+            # Search the body too: funding feeds routinely put the round
+            # detail in the description and keep the headline generic. The
+            # description was previously extracted and then ignored.
+            haystack = f"{title} {desc}".lower()
+            if any(keyword in haystack for keyword in FUNDING_KEYWORDS):
                 company_name = title.split()[0] if title else "Unknown"
                 signals.append(
                     HiringSignal(

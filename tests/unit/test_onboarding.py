@@ -2,7 +2,6 @@ import json
 
 import pytest
 from jobos.onboarding.wizard import OnboardingWizard
-from jobos.onboarding.shadow_mode import ShadowMode
 from jobos.onboarding.resume_parser import parse_uploaded_resume
 
 @pytest.mark.asyncio

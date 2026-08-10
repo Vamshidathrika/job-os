@@ -26,7 +26,8 @@ def compute_similarity(job_embedding: list[float], profile_embedding: list[float
         logger.warning("Embedding dimension mismatch", job_dim=len(job_embedding), profile_dim=len(profile_embedding))
         return 0.0
 
-    dot_product = sum(a * b for a, b in zip(job_embedding, profile_embedding))
+    # strict=True is safe: equal lengths were just enforced above.
+    dot_product = sum(a * b for a, b in zip(job_embedding, profile_embedding, strict=True))
     norm_job = math.sqrt(sum(a * a for a in job_embedding))
     norm_profile = math.sqrt(sum(b * b for b in profile_embedding))
     
