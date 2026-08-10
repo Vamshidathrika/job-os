@@ -1,47 +1,145 @@
+"""Integration test for the global ingestion pipeline.
+
+Runs the real GlobalIngestionWorker against the real Postgres test database.
+Only the two outbound network calls are stubbed — the ATS HTTP fetch and the
+embedding provider — because neither has credentials in CI. Normalization,
+SQL, casts and conflict handling are all exercised for real.
+"""
+
+import uuid
+
 import pytest
-from unittest.mock import AsyncMock
 
-from jobos.workers.ingestion_worker import GlobalIngestionWorker
-from jobos.db.models import Job
+from jobos.config import Settings
+from jobos.db.models import EMBEDDING_DIM
+from jobos.workers.global_ingestion import GlobalIngestionWorker
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_full_ingestion_cycle(mocker):
-    # Mock ATS poller
-    mock_poller = mocker.patch("jobos.workers.ingestion_worker.ATSPoller.poll_greenhouse", new_callable=AsyncMock)
-    mock_poller.return_value = [
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+
+GREENHOUSE_PAYLOAD = {
+    "jobs": [
         {
-            "external_id": "gh-999",
-            "title": "Backend Engineer",
-            "location": "Remote, India",
-            "description": "<p>Build scalable systems.</p>"
+            "id": 999,
+            "title": "backend engineer",
+            "location": {"name": "Hyderabad, India"},
+            "content": "<p>Build scalable systems.</p>",
+            "departments": [{"name": "Engineering"}],
+            "offices": [{"name": "Hyderabad"}],
         }
     ]
-    
-    # Mock Embeddings if necessary, or DB inserts if it's a partial integration
-    # Depending on architecture, we might just mock the embedding client
-    mock_embed = mocker.patch("jobos.workers.ingestion_worker.generate_embeddings", new_callable=AsyncMock)
-    mock_embed.return_value = [0.1] * 768
-    
-    # Mock DB insertion
-    mock_db_insert = mocker.patch("jobos.workers.ingestion_worker.db_insert_job", new_callable=AsyncMock)
-    
-    worker = GlobalIngestionWorker()
-    await worker.run_cycle(companies=["test_co"])
-    
-    # Verify poller called
-    mock_poller.assert_called_once_with("test_co")
-    
-    # Verify embedding called
-    mock_embed.assert_called()
-    
-    # Verify DB insert called with normalized fields
-    mock_db_insert.assert_called_once()
-    inserted_job = mock_db_insert.call_args[0][0]
-    
-    assert inserted_job["external_id"] == "gh-999"
-    assert inserted_job["title"] == "Backend Engineer"
-    assert "country" in inserted_job
-    assert inserted_job["country"] == "IN"
-    assert "embeddings" in inserted_job
-    assert len(inserted_job["embeddings"]) == 768
+}
+
+
+@pytest.fixture(autouse=True)
+async def clean_jobs(db_pool, setup_schema):
+    """Other suites seed companies and jobs; the ingestion counters below are
+    per-cycle totals across ALL companies, so start from a clean slate."""
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM jobs")
+        await conn.execute("DELETE FROM companies")
+    yield
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM jobs")
+        await conn.execute("DELETE FROM companies")
+
+
+@pytest.fixture
+def seeded_company(db_pool, setup_schema):
+    """Insert one greenhouse-backed company into the global companies table."""
+
+    async def _seed():
+        company_id = uuid.uuid4()
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO companies (id, name, domain, ats_type, ats_identifier) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                company_id,
+                "Acme Corp",
+                f"acme-{company_id.hex[:8]}.example",
+                "greenhouse",
+                "acme",
+            )
+        return company_id
+
+    return _seed
+
+
+async def test_full_ingestion_cycle_writes_normalized_job(db_pool, seeded_company, mocker):
+    company_id = await seeded_company()
+
+    # Stub only the outbound calls: the ATS HTTP GET and the embedding provider.
+    mocker.patch(
+        "jobos.ingestion.poller.ATSPoller._fetch_with_retry",
+        return_value=GREENHOUSE_PAYLOAD,
+    )
+    mocker.patch(
+        "jobos.workers.global_ingestion.generate_embedding",
+        return_value=[0.01] * EMBEDDING_DIM,
+    )
+
+    worker = GlobalIngestionWorker(pool=db_pool, settings=Settings())
+    result = await worker.run_cycle()
+
+    assert result["failed"] == 0, "no job should fail to insert"
+    assert result["ingested"] == 1
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM jobs WHERE company_id = $1 AND external_id = $2",
+            company_id,
+            "999",
+        )
+
+    assert row is not None, "job row was not persisted"
+    assert row["title"] == "Backend Engineer"  # normalizer title-cases
+    assert row["country"] == "IN"  # Hyderabad -> India bucket
+    assert row["ats_type"] == "greenhouse"
+    assert "<p>" not in row["description"], "HTML should be stripped"
+    assert row["id"] is not None, "id default must populate"
+
+
+async def test_ingestion_cycle_is_idempotent_on_rerun(db_pool, seeded_company, mocker):
+    """Re-polling the same posting updates in place rather than duplicating."""
+    company_id = await seeded_company()
+
+    mocker.patch(
+        "jobos.ingestion.poller.ATSPoller._fetch_with_retry",
+        return_value=GREENHOUSE_PAYLOAD,
+    )
+    mocker.patch(
+        "jobos.workers.global_ingestion.generate_embedding",
+        return_value=[0.01] * EMBEDDING_DIM,
+    )
+
+    worker = GlobalIngestionWorker(pool=db_pool, settings=Settings())
+    await worker.run_cycle()
+    await worker.run_cycle()
+
+    async with db_pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM jobs WHERE company_id = $1 AND external_id = $2",
+            company_id,
+            "999",
+        )
+
+    assert count == 1
+
+
+async def test_embedding_width_mismatch_is_counted_as_failure(db_pool, seeded_company, mocker):
+    """A wrong-width embedding must be caught, not written as a corrupt vector."""
+    await seeded_company()
+
+    mocker.patch(
+        "jobos.ingestion.poller.ATSPoller._fetch_with_retry",
+        return_value=GREENHOUSE_PAYLOAD,
+    )
+    mocker.patch(
+        "jobos.workers.global_ingestion.generate_embedding",
+        return_value=[0.01] * (EMBEDDING_DIM + 1),
+    )
+
+    worker = GlobalIngestionWorker(pool=db_pool, settings=Settings())
+    result = await worker.run_cycle()
+
+    assert result["ingested"] == 0
+    assert result["failed"] >= 1

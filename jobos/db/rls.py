@@ -15,6 +15,7 @@ TENANT_TABLES = [
     "outbox",
     "agent_decisions",
     "tenant_company_universe",
+    "action_queue",
 ]
 
 

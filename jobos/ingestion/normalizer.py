@@ -24,10 +24,10 @@ def normalize_job(
     loc_lower = location.lower()
     india_keywords = ["india", "hyderabad", "bangalore", "bengaluru", "pune", "mumbai", "chennai", "delhi", "gurgaon", "noida"]
     
-    if any(k in loc_lower for k in india_keywords):
-        country = "IN"
-    else:
-        country = "US" if not location else "US" # Fallback to US, real implementation might use NLP
+    # Coarse two-way bucket: this product targets the Indian market, so the
+    # only distinction that currently drives downstream logic is IN vs not-IN.
+    # Anything unrecognised (including an empty location) falls back to "US".
+    country = "IN" if any(k in loc_lower for k in india_keywords) else "US"
         
     description_raw = raw_job.get("content") or raw_job.get("description") or raw_job.get("descriptionPlain") or raw_job.get("descriptionHtml") or ""
     description = clean_html(str(description_raw))

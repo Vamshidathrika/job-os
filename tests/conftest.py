@@ -35,7 +35,15 @@ async def setup_schema(db_pool: asyncpg.Pool) -> None:
     the user_id-keyed tables (applications, people, ...).
     """
     async with db_pool.acquire() as conn:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        # The app role is deliberately not a superuser (RLS never applies to
+        # superusers, which would make every isolation test pass vacuously),
+        # so it cannot CREATE EXTENSION. pgvector must already be installed
+        # in the test database by a privileged role — see README setup.
+        if not await conn.fetchval("SELECT 1 FROM pg_extension WHERE extname = 'vector'"):
+            raise RuntimeError(
+                "pgvector is not installed in the test database. Run: "
+                "psql -d jobos_test -c 'CREATE EXTENSION vector;' as a superuser."
+            )
         for ddl in ALL_DDL:
             await conn.execute(ddl)
         for table_name in TENANT_TABLES:

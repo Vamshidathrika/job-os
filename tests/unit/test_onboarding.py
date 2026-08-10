@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from jobos.onboarding.wizard import OnboardingWizard
 from jobos.onboarding.shadow_mode import ShadowMode
@@ -25,27 +27,46 @@ async def test_onboarding_wizard_start() -> None:
     for step in expected_steps:
         assert step in progress["pending_steps"]
 
-@pytest.mark.asyncio
-async def test_shadow_mode_proposed_actions() -> None:
-    """Test shadow mode returns proposed actions."""
-    shadow = ShadowMode(tenant_id="tenant_123")
-    
-    # In mock implementation it currently returns []
-    actions = await shadow.get_proposed_actions()
-    
-    # If the mocked system returns an empty list, that's fine,
-    # we just check it returns a list and doesn't crash.
-    assert isinstance(actions, list)
+# Shadow mode is now backed by tenants.autonomy_mode and the action_queue,
+# so it is exercised for real in tests/integration/test_shadow_mode.py.
 
 @pytest.mark.asyncio
-async def test_parse_uploaded_resume() -> None:
-    """Test resume parsing returns structured data."""
-    file_path = "/tmp/fake_resume.pdf"
-    
-    result = await parse_uploaded_resume(file_path)
-    
+async def test_parse_uploaded_resume(tmp_path, mocker) -> None:
+    """Test resume parsing returns structured data from the real file."""
+    resume = tmp_path / "resume.txt"
+    resume.write_text("Asha Rao\nasha@example.com\nEngineer at Freshworks\n")
+
+    mocker.patch(
+        "jobos.onboarding.resume_parser.acompletion",
+        return_value={
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "name": "Asha Rao",
+                                "email": "asha@example.com",
+                                "experience": [{"company": "Freshworks", "title": "Engineer"}],
+                                "skills": ["python"],
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    result = await parse_uploaded_resume(str(resume))
+
     assert "name" in result
     assert "email" in result
     assert "experience" in result
     assert "skills" in result
-    assert result["name"] == "Jane Doe"
+    assert result["name"] == "Asha Rao"
+
+
+@pytest.mark.asyncio
+async def test_parse_uploaded_resume_missing_file_raises() -> None:
+    """A missing upload must fail loudly, not return a fabricated profile."""
+    with pytest.raises(FileNotFoundError):
+        await parse_uploaded_resume("/tmp/does_not_exist_resume.pdf")

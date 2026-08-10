@@ -40,6 +40,13 @@ class VaultSettings(BaseSettings):
     aws_region: str = "ap-south-1"
     # GCP KMS
     gcp_kms_key_name: str = ""
+    # Read from the top-level JOBOS_ENVIRONMENT (not JOBOS_VAULT_ENVIRONMENT)
+    # so the vault can refuse dev-only key material in production.
+    environment: str = Field(default="development", validation_alias="JOBOS_ENVIRONMENT")
+
+    @property
+    def environment_is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
 
 
 class LLMSettings(BaseSettings):

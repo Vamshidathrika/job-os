@@ -38,9 +38,30 @@ def test_score_referrer_all_signals() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_referral_sequence() -> None:
+async def test_generate_referral_sequence(mocker) -> None:
     """3-touch sequence generation returns 3 emails."""
-    referrer = {"name": "John", "email": "john@company.com"}
+    mocker.patch(
+        "jobos.referral.sequence.acompletion",
+        return_value={
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '[{"subject":"s1","body":"b1"},'
+                            '{"subject":"s2","body":"b2"},'
+                            '{"subject":"s3","body":"b3"}]'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+    # A sequence is only generated when there is real common ground to cite.
+    referrer = {
+        "name": "John",
+        "email": "john@company.com",
+        "shared_past_company": ["freshworks"],
+    }
     job = {"title": "Senior Engineer", "company": "Acme"}
     user_profile = {"name": "Jane"}
     sequence = await generate_referral_sequence(referrer, job, user_profile)
@@ -49,6 +70,17 @@ async def test_generate_referral_sequence() -> None:
     for email in sequence:
         assert "subject" in email
         assert "body" in email
+
+
+@pytest.mark.asyncio
+async def test_referral_sequence_gated_without_shared_context() -> None:
+    """No common ground means no email — that is the personalization gate."""
+    sequence = await generate_referral_sequence(
+        {"name": "John", "email": "john@company.com"},
+        {"title": "Senior Engineer", "company": "Acme"},
+        {"name": "Jane"},
+    )
+    assert sequence == []
 
 
 @pytest.mark.asyncio

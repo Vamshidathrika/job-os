@@ -42,6 +42,13 @@ dependencies = [
     "tenacity>=9.0.0",
     "structlog>=24.4.0",
     "numpy>=2.1.0",
+
+    # Async SQLAlchemy (used by alembic) requires greenlet at runtime
+    "greenlet>=3.0.0",
+
+    # Resume parsing
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.2",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +56,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
     "testcontainers[postgres]>=4.8.0",
     "httpx>=0.28.0",
     "ruff>=0.8.0",
@@ -57,6 +65,10 @@ dev = [
 ]
 playwright = [
     "playwright>=1.49.0",
+]
+aws = [
+    # Required only when JOBOS_VAULT_KMS_PROVIDER=aws
+    "boto3>=1.35.0",
 ]
 
 [tool.ruff]

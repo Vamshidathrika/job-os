@@ -13,7 +13,7 @@ def normalize_text(text: str) -> str:
     """Normalize text by converting to lowercase, stripping punctuation and extra whitespace."""
     if not text:
         return ""
-    text = text.lower()
+    text = text.lower().replace("_", " ")
     text = re.sub(r"[^\w\s]", " ", text)
     return " ".join(text.split())
 

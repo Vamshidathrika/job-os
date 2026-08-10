@@ -9,13 +9,14 @@ EMBEDDING_DIM = 768
 # Global Tables (no RLS)
 COMPANIES_DDL = """
 CREATE TABLE IF NOT EXISTS companies (
-    id uuid PRIMARY KEY,
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
     domain text UNIQUE NOT NULL,
     canonical_name text,
     ats_type text,
     ats_identifier text,
-    created_at timestamptz DEFAULT now()
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
 );
 """
 
@@ -66,6 +67,12 @@ CREATE TABLE IF NOT EXISTS users (
 );
 """
 
+# NOTE: tenants.id is deliberately constrained to equal tenants.user_id.
+# The RLS policies in jobos/db/rls.py compare a single session variable
+# ('jobos.tenant_id') against tenant_id columns on some tables and user_id
+# columns on others. Those policies are only coherent if the two identifiers
+# are the same value, so the invariant is enforced here in the schema rather
+# than left as an undocumented assumption.
 TENANTS_DDL = """
 CREATE TABLE IF NOT EXISTS tenants (
     id uuid PRIMARY KEY,
@@ -77,7 +84,8 @@ CREATE TABLE IF NOT EXISTS tenants (
     domain_warmup_complete boolean DEFAULT false,
     breaker_tripped_at timestamptz,
     breaker_reason text,
-    created_at timestamptz DEFAULT now()
+    created_at timestamptz DEFAULT now(),
+    CONSTRAINT tenants_id_matches_user_id CHECK (id = user_id)
 );
 """
 
@@ -144,6 +152,9 @@ CREATE TABLE IF NOT EXISTS applications (
     band text,
     tailored_resume_url text,
     submitted_at timestamptz,
+    -- Set when the application reaches the interview stage. Without it there
+    -- is no way to compute time-to-interview, which the dashboard reports.
+    interview_scheduled_at timestamptz,
     status text DEFAULT 'pending',
     created_at timestamptz DEFAULT now()
 );
@@ -206,13 +217,43 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
 );
 """
 
+# Keyed by (tenant_id, company_domain) rather than company_id: the hiring
+# radar discovers targets by domain from signals before a companies row
+# necessarily exists, so company_id is backfilled and stays nullable.
 TENANT_COMPANY_UNIVERSE_DDL = """
 CREATE TABLE IF NOT EXISTS tenant_company_universe (
     tenant_id uuid REFERENCES tenants(id) ON DELETE CASCADE,
+    company_domain text NOT NULL,
     company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
     tier int DEFAULT 2,
-    PRIMARY KEY(tenant_id, company_id)
+    signal_type text,
+    action text,
+    added_at timestamptz DEFAULT now(),
+    PRIMARY KEY(tenant_id, company_domain)
 );
+"""
+
+ACTION_QUEUE_DDL = """
+CREATE TABLE IF NOT EXISTS action_queue (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+    action_type text NOT NULL,
+    payload jsonb NOT NULL,
+    band text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    result jsonb,
+    error text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
+);
+"""
+
+# Kept separate from the CREATE TABLE above: every entry in ALL_DDL must be a
+# single statement, because alembic executes them via prepared statements,
+# which reject multiple commands.
+ACTION_QUEUE_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS action_queue_band_status_idx
+    ON action_queue (user_id, band, status, created_at);
 """
 
 ALL_DDL = [
@@ -232,4 +273,6 @@ ALL_DDL = [
     OUTBOX_DDL,
     AGENT_DECISIONS_DDL,
     TENANT_COMPANY_UNIVERSE_DDL,
+    ACTION_QUEUE_DDL,
+    ACTION_QUEUE_INDEX_DDL,
 ]
