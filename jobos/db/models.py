@@ -1,10 +1,10 @@
 """SQL schema definitions for JOBOS database tables."""
 
 # Dimension of the job embedding vector. MUST match the output width of the
-# configured LLMSettings.embedding_model — the default
-# 'cloudflare/@cf/baai/bge-base-en-v1.5' emits 768 floats. Changing the model
-# to one with a different width requires a migration that ALTERs this column.
-EMBEDDING_DIM = 768
+# configured LLMSettings.embedding_model — the default local
+# 'BAAI/bge-small-en-v1.5' emits 384 floats. Changing the model to one with a
+# different width requires a migration that ALTERs this column.
+EMBEDDING_DIM = 384
 
 # Global Tables (no RLS)
 COMPANIES_DDL = """

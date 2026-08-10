@@ -61,7 +61,11 @@ class LLMSettings(BaseSettings):
     # Default models (can be overridden per-tenant via BYOK)
     tailoring_model: str = "groq/llama-3.3-70b-versatile"
     entailment_model: str = "nvidia_nim/meta/llama-3.1-70b-instruct"
-    embedding_model: str = "cloudflare/@cf/baai/bge-base-en-v1.5"
+    # Local ONNX model — no API key, no quota, no network at inference time.
+    # Set to a litellm route (e.g. 'cloudflare/@cf/baai/bge-base-en-v1.5') to
+    # use a hosted provider instead; EMBEDDING_DIM must then match its width.
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_local: bool = True
 
 
 class ComposioSettings(BaseSettings):
