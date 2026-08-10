@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { 
-  Zap, Shield, TrendingUp, Users, DollarSign, Calendar, CheckCircle2, 
-  AlertTriangle, Clock, Eye, Send, Play, Cpu, Lock, FileText, ChevronRight,
-  Sparkles, Activity, Layers, RefreshCw, Mail, MessageSquare, Radar, Filter,
-  Target, BarChart3, HelpCircle, CheckSquare, Settings
+  Zap, Shield, TrendingUp, Users, DollarSign, Calendar, 
+  Eye, Send, Cpu, Lock, FileText, Activity, Layers, RefreshCw, Mail, MessageSquare, Radar,
+  Target
 } from 'lucide-react';
 
 interface PipelineStats {
@@ -618,7 +617,7 @@ export function App() {
                 Circuit Breaker Limits: Max 20 Daily Applies, Max 10 Daily Emails (Runaway Protection)
               </div>
               <div style={{ padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.85rem' }}>
-                Ghost Job Detector: {ghostJobs.length} stale listings flagged (>60 days inactive)
+                Ghost Job Detector: {ghostJobs.length} stale listings flagged (&gt;60 days inactive)
               </div>
             </div>
           </div>
