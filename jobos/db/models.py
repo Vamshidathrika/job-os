@@ -1,5 +1,11 @@
 """SQL schema definitions for JOBOS database tables."""
 
+# Dimension of the job embedding vector. MUST match the output width of the
+# configured LLMSettings.embedding_model — the default
+# 'cloudflare/@cf/baai/bge-base-en-v1.5' emits 768 floats. Changing the model
+# to one with a different width requires a migration that ALTERs this column.
+EMBEDDING_DIM = 768
+
 # Global Tables (no RLS)
 COMPANIES_DDL = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -13,16 +19,17 @@ CREATE TABLE IF NOT EXISTS companies (
 );
 """
 
-JOBS_DDL = """
+JOBS_DDL = f"""
 CREATE TABLE IF NOT EXISTS jobs (
-    id uuid PRIMARY KEY,
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
     external_id text NOT NULL,
     title text NOT NULL,
     location text,
     country text DEFAULT 'IN',
     description text,
-    embedding vector(1536),
+    ats_type text,
+    embedding vector({EMBEDDING_DIM}),
     raw_json jsonb,
     first_seen_at timestamptz DEFAULT now(),
     UNIQUE(company_id, external_id)

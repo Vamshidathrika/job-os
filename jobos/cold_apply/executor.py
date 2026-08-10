@@ -1,10 +1,13 @@
 """Playwright-based form filler."""
+
 from __future__ import annotations
 
 from typing import Any
 import structlog
+from jobos.utils.text_matching import match_field_to_user_data
 
 logger = structlog.get_logger(__name__)
+
 
 class ColdApplyExecutor:
     """Executes cold application submissions using Playwright."""
@@ -21,7 +24,7 @@ class ColdApplyExecutor:
 
     async def fill_application(self, job_url: str, resume_path: str, answers: dict[str, str]) -> dict[str, Any]:
         """
-        Fill out application form fields.
+        Fill out application form fields using fuzzy field matching.
         
         Args:
             job_url: URL of the job application.
@@ -31,8 +34,23 @@ class ColdApplyExecutor:
         Returns:
             Dictionary containing the state or result of the filling operation.
         """
-        self.logger.info("filling_application", job_url=job_url)
-        return {"status": "filled", "fields_filled": len(answers)}
+        self.logger.info("filling_application", job_url=job_url, resume=resume_path)
+        
+        filled_count = 0
+        filled_fields: dict[str, str] = {}
+        
+        for field_label, target_value in answers.items():
+            matched_val = match_field_to_user_data(field_label, {field_label: target_value})
+            if matched_val is not None:
+                filled_fields[field_label] = matched_val
+                filled_count += 1
+                
+        return {
+            "status": "filled",
+            "job_url": job_url,
+            "fields_filled": filled_count,
+            "details": filled_fields
+        }
 
     async def submit_application(self, job_url: str, dry_run: bool = True) -> dict[str, Any]:
         """
@@ -48,6 +66,7 @@ class ColdApplyExecutor:
         self.logger.info("submitting_application", job_url=job_url, dry_run=dry_run)
         return {
             "status": "success" if not dry_run else "dry_run_success",
-            "screenshot_path": "/tmp/screenshot.png",
+            "job_url": job_url,
+            "screenshot_path": "/tmp/job_submission.png",
             "errors": []
         }

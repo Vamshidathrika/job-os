@@ -30,8 +30,8 @@ def upgrade() -> None:
         
     # 3. Apply RLS
     for table_name in TENANT_TABLES:
-        rls_sql = generate_rls_sql(table_name)
-        op.execute(rls_sql)
+        for statement in generate_rls_sql(table_name):
+            op.execute(statement)
 
 
 def downgrade() -> None:
