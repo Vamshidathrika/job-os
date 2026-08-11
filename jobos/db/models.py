@@ -49,6 +49,33 @@ CREATE TABLE IF NOT EXISTS job_requirements (
 );
 """
 
+# Bearer tokens that authenticate API callers.
+#
+# Deliberately NOT under row-level security: authentication has to resolve a
+# tenant *before* any tenant context exists to filter by, so the lookup runs
+# on an unscoped connection. This is the one table that must be readable
+# without a tenant — every other tenant table stays RLS-isolated.
+#
+# Only the SHA-256 of the token is stored. A database dump therefore yields
+# no working credentials.
+API_TOKENS_DDL = """
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+    token_hash text UNIQUE NOT NULL,
+    name text NOT NULL,
+    created_at timestamptz DEFAULT now(),
+    last_used_at timestamptz,
+    revoked_at timestamptz,
+    UNIQUE(user_id, name)
+);
+"""
+
+API_TOKENS_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS api_tokens_hash_active_idx
+    ON api_tokens (token_hash) WHERE revoked_at IS NULL;
+"""
+
 SUPPRESSION_LIST_DDL = """
 CREATE TABLE IF NOT EXISTS suppression_list (
     email_hash text PRIMARY KEY,
@@ -306,4 +333,7 @@ ALL_DDL = [
     ACTION_QUEUE_INDEX_DDL,
     WARM_PATH_RACES_DDL,
     WARM_PATH_RACES_INDEX_DDL,
+    # After USERS_DDL: api_tokens has a foreign key to users(id).
+    API_TOKENS_DDL,
+    API_TOKENS_INDEX_DDL,
 ]

@@ -29,7 +29,11 @@ interface SecurityStatus {
 export function App() {
   const [activePhaseTab, setActivePhaseTab] = useState<number>(0);
   const [shadowMode, setShadowMode] = useState<boolean>(true);
-  const [tenantId] = useState<string>('00000000-0000-0000-0000-000000000001');
+  // The API derives the tenant from this token — the dashboard cannot choose
+  // which tenant it acts as. Mint one with: jobos --user-id <uuid> token create --name browser
+  const [apiToken, setApiToken] = useState<string>(() => localStorage.getItem('jobos_token') || '');
+  const [tokenInput, setTokenInput] = useState<string>('');
+  const [authError, setAuthError] = useState<string>('');
 
   // Real backend states
   const [stats, setStats] = useState<PipelineStats | null>(null);
@@ -62,7 +66,7 @@ export function App() {
   const fetchAllPhaseData = async () => {
     setLoading(true);
     try {
-      const headers = { 'X-Tenant-ID': tenantId };
+      const headers = { 'Authorization': `Bearer ${apiToken}` };
 
       const [sRes, secRes, jRes, aRes, intRes, ghostRes, wizRes] = await Promise.all([
         fetch('/api/stats', { headers }).then(r => r.json()).catch(() => null),
@@ -98,8 +102,23 @@ export function App() {
   };
 
   useEffect(() => {
-    fetchAllPhaseData();
-  }, []);
+    if (apiToken) fetchAllPhaseData();
+  }, [apiToken]);
+
+  const handleSignIn = async () => {
+    const candidate = tokenInput.trim();
+    if (!candidate) return;
+    // Verify before storing, so a bad paste says so instead of showing an
+    // empty dashboard that looks like "you have no data".
+    const res = await fetch('/api/stats', { headers: { 'Authorization': `Bearer ${candidate}` } });
+    if (!res.ok) {
+      setAuthError(res.status === 401 ? 'Token rejected. Check it and try again.' : `Server error (${res.status}).`);
+      return;
+    }
+    localStorage.setItem('jobos_token', candidate);
+    setAuthError('');
+    setApiToken(candidate);
+  };
 
   // Action handlers for phase interactive widgets
   const handlePredictComp = async () => {
@@ -155,7 +174,7 @@ export function App() {
   const handleExecuteAction = async (id: string) => {
     await fetch(`/api/actions/${id}/execute`, {
       method: 'POST',
-      headers: { 'X-Tenant-ID': tenantId }
+      headers: { 'Authorization': `Bearer ${apiToken}` }
     });
     setActions(actions.filter(a => a.action_id !== id));
   };
@@ -179,9 +198,47 @@ export function App() {
     { id: 15, title: 'Phase 15: Onboarding & Shadow Mode', icon: Eye },
   ];
 
+  if (!apiToken) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div className="glass-panel" style={{ padding: '32px', maxWidth: '520px', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+            <div style={{ background: 'linear-gradient(135deg, #6366f1, #06b6d4)', padding: '10px', borderRadius: '12px', display: 'flex' }}>
+              <Cpu size={24} color="#fff" />
+            </div>
+            <h1 style={{ fontSize: '1.4rem' }}>JOBOS</h1>
+          </div>
+          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '20px' }}>
+            Paste your API token to continue. Mint one with:
+          </p>
+          <code style={{ display: 'block', background: 'rgba(0,0,0,0.35)', padding: '10px 12px', borderRadius: '8px', fontSize: '0.75rem', color: '#06b6d4', marginBottom: '20px', overflowX: 'auto' }}>
+            jobos --user-id &lt;your-uuid&gt; token create --name browser
+          </code>
+          <input
+            type="password"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSignIn(); }}
+            placeholder="jobos_..."
+            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: '0.9rem', marginBottom: '12px' }}
+          />
+          {authError && (
+            <p style={{ color: '#f87171', fontSize: '0.8rem', marginBottom: '12px' }}>{authError}</p>
+          )}
+          <button
+            onClick={handleSignIn}
+            style={{ width: '100%', padding: '12px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg, #6366f1, #06b6d4)', color: '#fff', fontSize: '0.9rem', cursor: 'pointer', fontWeight: 600 }}
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: '100vh', padding: '24px', maxWidth: '1440px', margin: '0 auto' }}>
-      
+
       {/* HEADER BAR */}
       <header className="glass-panel" style={{ padding: '16px 24px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -194,7 +251,13 @@ export function App() {
               <span className="badge badge-band-a" style={{ fontSize: '0.65rem' }}>100% OPERATIONAL</span>
             </div>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Tenant UUID: <strong style={{ color: '#6366f1' }}>{tenantId}</strong>
+              Authenticated via API token{' '}
+              <button
+                onClick={() => { localStorage.removeItem('jobos_token'); setApiToken(''); }}
+                style={{ background: 'none', border: 'none', color: '#6366f1', cursor: 'pointer', fontSize: '0.8rem', textDecoration: 'underline', padding: 0 }}
+              >
+                sign out
+              </button>
             </p>
           </div>
         </div>

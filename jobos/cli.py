@@ -11,7 +11,8 @@ from typing import Any
 import structlog
 
 from jobos.config import settings
-from jobos.db.pool import create_pool, tenant_conn
+from jobos.db.pool import create_pool, global_conn, tenant_conn
+from jobos.vault.api_tokens import create_token, list_tokens, revoke_token
 from jobos.runner.pipeline import (
     run_full_pipeline,
     stage_ingest,
@@ -44,7 +45,36 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="Run the whole pipeline")
     run.add_argument("--seed-file")
 
+    token = sub.add_parser("token", help="Manage API tokens for the dashboard/API")
+    token_sub = token.add_subparsers(dest="token_action", required=True)
+    token_create = token_sub.add_parser("create", help="Mint a token (shown once)")
+    token_create.add_argument("--name", required=True, help="Label, e.g. 'laptop'")
+    token_sub.add_parser("list", help="List tokens (never shows the secret)")
+    token_revoke = token_sub.add_parser("revoke", help="Revoke a token by name")
+    token_revoke.add_argument("--name", required=True)
+
     return parser
+
+
+async def run_token_command(
+    pool: Any, user_id: str, action: str, name: str | None = None
+) -> dict[str, Any]:
+    """Create, list or revoke API tokens.
+
+    api_tokens has no RLS — authentication has to resolve a tenant before a
+    tenant context exists — so this runs on a global connection.
+    """
+    async with global_conn(pool) as conn:
+        if action == "create":
+            token = await create_token(conn, user_id, name=name or "")
+            return {
+                "token": token,
+                "name": name,
+                "warning": "Store this now — it is hashed at rest and cannot be shown again.",
+            }
+        if action == "revoke":
+            return {"revoked": await revoke_token(conn, user_id, name=name or ""), "name": name}
+        return {"tokens": await list_tokens(conn, user_id)}
 
 
 async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -57,6 +87,10 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 return await import_profile(
                     conn, args.user_id, zip_path=args.linkedin_zip, resume_path=args.resume
                 )
+        if args.command == "token":
+            return await run_token_command(
+                pool, args.user_id, action=args.token_action, name=getattr(args, "name", None)
+            )
         if args.command == "seed":
             return await stage_seed(pool, args.file)
         if args.command == "ingest":

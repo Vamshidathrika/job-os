@@ -23,7 +23,8 @@ from jobos.calibration.ghost_tracker import detect_ghost_jobs
 from jobos.config import settings
 from jobos.dashboard.stats import get_pipeline_stats
 from jobos.dashboard.timeline import get_activity_timeline
-from jobos.db.pool import create_pool, tenant_conn
+from jobos.db.pool import create_pool, global_conn, tenant_conn
+from jobos.vault.api_tokens import InvalidTokenError, resolve_tenant
 from jobos.policy.multi_tenant import PROHIBITIONS
 from jobos.hiring_radar.sources import scan_funding_rss
 from jobos.referral.scorer import score_referrer
@@ -60,18 +61,36 @@ app.add_middleware(
 )
 
 
-async def tenant_id_header(x_tenant_id: str = Header(...)) -> str:
-    """Require an explicit tenant id on every tenant-scoped request.
+async def authenticated_tenant(authorization: str = Header(default="")) -> str:
+    """Resolve the acting tenant from the caller's bearer token.
 
-    There is deliberately no default: a fallback tenant would let any caller
-    who omits the header silently read and write another tenant's rows.
+    Identity comes from a secret the caller proves they hold — never from a
+    header they simply assert. Any X-Tenant-Id header is ignored outright:
+    validating it against the token would still leave a second, weaker path
+    to declaring who you are.
     """
-    if not x_tenant_id.strip():
-        raise HTTPException(status_code=400, detail="X-Tenant-Id header must not be empty")
-    return x_tenant_id
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization: Bearer <token> required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    async with global_conn(app.state.pool) as conn:
+        try:
+            return await resolve_tenant(conn, token.strip())
+        except InvalidTokenError as e:
+            # Malformed, unknown and revoked all fail identically so a caller
+            # cannot probe for which tokens exist.
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or revoked API token",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from e
 
 
-async def tenant_db(tenant: str = Depends(tenant_id_header)) -> AsyncGenerator[Any, None]:
+async def tenant_db(tenant: str = Depends(authenticated_tenant)) -> AsyncGenerator[Any, None]:
     """Yield a connection with this request's tenant context applied.
 
     Real DB errors propagate as a 500 rather than being swallowed into a
@@ -125,7 +144,7 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "JOBOS Backend API", "rls": "ENFORCED"}
 
 @app.get("/api/security/status")
-async def security_status(tenant: str = Depends(tenant_id_header), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
+async def security_status(tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
     cb = CircuitBreaker(conn=conn, tenant_id=tenant)
     status = await cb.get_status()
     return {
@@ -139,7 +158,7 @@ async def security_status(tenant: str = Depends(tenant_id_header), conn: Any = D
 
 @app.get("/api/jobs")
 async def list_jobs(
-    limit: int = 100, tenant: str = Depends(tenant_id_header)
+    limit: int = 100, tenant: str = Depends(authenticated_tenant)
 ) -> list[dict[str, Any]]:
     """Jobs already ingested into Postgres by `jobos ingest`.
 
@@ -237,22 +256,22 @@ async def analyze_profile_endpoint(req: ProfileAnalyzeReq) -> dict[str, Any]:
     return await analyze_profile({"headline": req.headline, "summary": req.summary, "experience": req.experience})
 
 @app.get("/api/stats")
-async def get_stats(tenant: str = Depends(tenant_id_header), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
+async def get_stats(tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
     return await get_pipeline_stats(conn, tenant_id=tenant)
 
 @app.get("/api/timeline")
 async def get_timeline(
-    days: int = 30, tenant: str = Depends(tenant_id_header), conn: Any = Depends(tenant_db)
+    days: int = 30, tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)
 ) -> list[dict[str, Any]]:
     return await get_activity_timeline(conn, tenant_id=tenant, days=days)
 
 @app.get("/api/actions")
-async def list_actions(band: str = "A", tenant: str = Depends(tenant_id_header), conn: Any = Depends(tenant_db)) -> list[dict[str, Any]]:
+async def list_actions(band: str = "A", tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)) -> list[dict[str, Any]]:
     queue = ActionQueue(conn=conn, tenant_id=tenant)
     return await queue.dequeue_batch(band=band, limit=20)
 
 @app.post("/api/actions/{action_id}/execute")
-async def execute_action(action_id: str, tenant: str = Depends(tenant_id_header), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
+async def execute_action(action_id: str, tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
     queue = ActionQueue(conn=conn, tenant_id=tenant)
     await queue.mark_complete(action_id=action_id, result={"executed": True})
     return {"action_id": action_id, "status": "completed"}
@@ -283,11 +302,11 @@ async def ghost_jobs_check() -> list[dict[str, Any]]:
     return await detect_ghost_jobs(test_jobs)
 
 @app.get("/api/onboarding/wizard")
-async def get_wizard_status(tenant: str = Depends(tenant_id_header)) -> dict[str, Any]:
+async def get_wizard_status(tenant: str = Depends(authenticated_tenant)) -> dict[str, Any]:
     wiz = OnboardingWizard(tenant_id=tenant)
     return await wiz.start()
 
 @app.post("/api/onboarding/step")
-async def submit_wizard_step(req: OnboardingStepReq, tenant: str = Depends(tenant_id_header)) -> dict[str, Any]:
+async def submit_wizard_step(req: OnboardingStepReq, tenant: str = Depends(authenticated_tenant)) -> dict[str, Any]:
     wiz = OnboardingWizard(tenant_id=tenant)
     return await wiz.submit_step(req.step_name, req.data)
