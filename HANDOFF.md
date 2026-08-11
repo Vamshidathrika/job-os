@@ -55,14 +55,13 @@ Full product framing: [`README.md`](README.md).
 
 ### What is NOT done and is the biggest real gap
 
-- **API has no authentication.** Tenant identity comes entirely from a
-  client-supplied `X-Tenant-Id` header. There is no default anymore (that
-  hole was closed), so a missing header now 422s — but anyone who *sends* a
-  header, any header, acts as that tenant. **This must land before the API
-  is ever exposed off `localhost`.** Nothing in this plan built it; it was
-  deliberately deferred (see the design spec below for the reasoning) and
-  then deprioritized further when the user asked to build the pipeline
-  first. It is still not done.
+- ~~**API has no authentication.**~~ **Done** (`6515dea`). Tenant identity now
+  comes from an opaque bearer token, hashed at rest in `api_tokens`.
+  `X-Tenant-Id` is ignored outright. Mint with
+  `jobos --user-id <uuid> token create --name browser`; the dashboard has a
+  paste-once login screen. `/health` stays public.
+  Remaining caveats: tokens never expire (revoke by name to kill one), and
+  there is no rate limiting on the auth endpoint.
 - **No LLM path has been run against a real model.** Groq key exists
   (per user) but hasn't been wired into `.env` or exercised end-to-end. All
   LLM-dependent code (entailment, tailoring, sequence generation, resume
@@ -166,19 +165,17 @@ source .venv/bin/activate
 
 ## Recommended next steps, in priority order
 
-1. **API authentication.** Nothing else here is safe to expose off
-   localhost until this lands. Opaque bearer tokens hashed at rest was the
-   direction discussed with the user (see spec doc's earlier draft, section
-   was cut when scope changed to "make it run first").
-2. **Real LinkedIn export + Groq key wiring.** Both exist per the user; get
+1. **Real LinkedIn export + Groq key wiring.** Both exist per the user; get
    them into `.env` / imported via `jobos import`, then run `jobos run` for
-   real and see what an actual personalized run produces.
-3. **Test coverage for `jobos/api/main.py`.** Currently zero. It's the
-   most-churned file in the repo and the one most recently caught silently
-   fabricating data.
-4. **Fix the 3 broken seed company board tokens** in
-   `data/seed_companies.yaml`.
-5. **Dashboard**: reconcile the remaining static "phase explainer" panels
+   real and see what an actual personalized run produces. **This is the only
+   remaining blocker to the product's core claim being demonstrated end to
+   end** — no LLM path has ever been run against a live model.
+2. **Fix the 3 broken seed company board tokens** in
+   `data/seed_companies.yaml` (Chargebee, Zoho, Swiggy all 404).
+3. **Dashboard**: reconcile the remaining static "phase explainer" panels
    (Phase 1, 2, 4-15 tabs) — right now only Phase 0's stat tiles read real
    data; the rest are documentation-style placeholders with hardcoded sample
-   calculations, not live views. Lower priority than the above.
+   calculations, not live views.
+4. **Auth hardening** (the basics are done, these are the follow-ups):
+   token expiry, rate limiting on failed auth, and an audit trail of token
+   use beyond `last_used_at`.
