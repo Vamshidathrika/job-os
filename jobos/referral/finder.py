@@ -31,19 +31,11 @@ async def find_referrers(
     logger.info("finding_referrers", company_domain=company_domain)
 
     if apollo is None:
-        return [
-            {
-                "name": f"Engineer at {company_domain.split('.')[0].capitalize()}",
-                "title": "Senior Software Engineer",
-                "email": f"referral@{company_domain}",
-                "email_verified": True,
-                "linkedin_url": f"https://linkedin.com/in/{company_domain.split('.')[0]}-referrer",
-                "company_domain": company_domain,
-                "shared_school": ["Stanford"],
-                "shared_past_company": ["Google"],
-                "warmth_score": 0.9,
-            }
-        ]
+        # No provider configured means no data to search, not a fabricated
+        # candidate. A guessed address like referral@<domain> would send real
+        # outreach to one that doesn't exist and burn the sending domain.
+        logger.info("no_apollo_client_configured", company_domain=company_domain)
+        return []
 
     people = await apollo.search_people(company_domain=company_domain, per_page=limit)
     if not people:

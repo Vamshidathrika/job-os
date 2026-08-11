@@ -43,6 +43,20 @@ async def test_finder_returns_nothing_when_provider_has_no_people():
     assert result == []
 
 
+async def test_finder_returns_nothing_when_no_apollo_client_configured():
+    """No configured provider must also mean no data — not an invented one.
+
+    This is a regression test: an earlier version of this function fabricated
+    a referrer (fake email at referral@<domain>, invented "Stanford"/"Google"
+    shared history) whenever apollo=None. Real outreach would have gone to an
+    address that does not exist.
+    """
+    result = await find_referrers("acme.com", USER_PROFILE, apollo=None)
+
+    assert result == []
+    assert "referral@acme.com" not in str(result)
+
+
 async def test_finder_never_invents_an_email():
     apollo = FakeApollo([{"first_name": "Ravi", "last_name": "K", "title": "SWE"}])
 

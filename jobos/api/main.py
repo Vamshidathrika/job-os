@@ -40,8 +40,6 @@ from jobos.onboarding.wizard import OnboardingWizard
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_TENANT_UUID = "00000000-0000-0000-0000-000000000001"
-
 
 # Live store fetching REAL ATS data from public endpoints
 class RealATSStore:
@@ -167,7 +165,12 @@ app.add_middleware(
 )
 
 
-async def tenant_id_header(x_tenant_id: str = Header(default=DEFAULT_TENANT_UUID)) -> str:
+async def tenant_id_header(x_tenant_id: str = Header(...)) -> str:
+    """Require an explicit tenant id on every tenant-scoped request.
+
+    There is deliberately no default: a fallback tenant would let any caller
+    who omits the header silently read and write another tenant's rows.
+    """
     if not x_tenant_id.strip():
         raise HTTPException(status_code=400, detail="X-Tenant-Id header must not be empty")
     return x_tenant_id
