@@ -1,0 +1,133 @@
+"""Sequences scoring, EV and tiering over ingested jobs.
+
+This is the glue between ingestion and the warm-path race. Every function it
+calls already exists and is tested; this module only orders them and persists
+the outcome.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import structlog
+
+from jobos.comp.predictor import predict_salary_band
+from jobos.ingestion.embedder import generate_embedding
+from jobos.matcher.ev_ranker import calculate_ev
+from jobos.matcher.scorer import compute_similarity
+from jobos.matcher.tier_gate import classify_tier
+
+logger = structlog.get_logger(__name__)
+
+# Similarity is a weak proxy for offer probability, so it is damped rather
+# than used directly: a 0.8 cosine match is not an 80% chance of an offer.
+P_OFFER_SCALE = 0.35
+
+# Normalises EV (rupees) onto the 0-1 scale classify_tier expects.
+EV_NORMALISATION_INR = 5_000_000.0
+
+
+def build_profile_text(bullets: list[dict[str, Any]]) -> str:
+    """Flatten the Career Graph into one document for embedding."""
+    parts: list[str] = []
+    for bullet in bullets:
+        role = bullet.get("role") or ""
+        company = bullet.get("company") or ""
+        text = bullet.get("bullet_text") or ""
+        parts.append(" ".join(p for p in (role, company, text) if p))
+    return "\n".join(parts)
+
+
+async def run_matching(conn: Any, user_id: str, limit: int = 500) -> dict[str, int]:
+    """Score every ingested job against the user's Career Graph.
+
+    Args:
+        conn: A tenant-scoped connection.
+        user_id: The user to match for.
+        limit: Maximum jobs to score in one pass.
+
+    Returns:
+        Counts of jobs scored and how many landed in Tier 1.
+    """
+    bullets = [
+        dict(row)
+        for row in await conn.fetch(
+            "SELECT bullet_text, role, company FROM cg_bullets WHERE user_id = $1::uuid",
+            user_id,
+        )
+    ]
+    if not bullets:
+        logger.warning("matching_skipped_no_career_graph", user_id=user_id)
+        return {"scored": 0, "tier_1": 0}
+
+    profile_text = build_profile_text(bullets)
+    profile_vector = await generate_embedding(profile_text)
+
+    jobs = await conn.fetch(
+        """
+        SELECT j.id, j.title, j.description, j.location, j.embedding
+          FROM jobs j
+         WHERE j.embedding IS NOT NULL
+         ORDER BY j.first_seen_at DESC
+         LIMIT $1
+        """,
+        limit,
+    )
+
+    scored = tier_1 = 0
+    for job in jobs:
+        job_vector = _parse_vector(job["embedding"])
+        if not job_vector:
+            continue
+
+        score = compute_similarity(job_vector, profile_vector)
+        band = predict_salary_band(
+            title=job["title"] or "", location=job["location"] or "", yoe=_years_of_experience(bullets)
+        )
+        ev = calculate_ev(p_offer=score * P_OFFER_SCALE, predicted_comp_p50=band["p50"])
+        ev_score = min(1.0, ev / EV_NORMALISATION_INR)
+        tier = classify_tier(match_score=score, ev_score=ev_score)
+
+        await conn.execute(
+            """
+            INSERT INTO matches (id, user_id, job_id, score, ev_score, tier)
+            VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, $5)
+            ON CONFLICT (user_id, job_id) DO UPDATE
+                SET score = EXCLUDED.score,
+                    ev_score = EXCLUDED.ev_score,
+                    tier = EXCLUDED.tier
+            """,
+            user_id,
+            job["id"],
+            score,
+            ev_score,
+            tier,
+        )
+        scored += 1
+        if tier == 1:
+            tier_1 += 1
+
+    logger.info("matching_complete", user_id=user_id, scored=scored, tier_1=tier_1)
+    return {"scored": scored, "tier_1": tier_1}
+
+
+def _parse_vector(raw: Any) -> list[float]:
+    """pgvector comes back as a string like '[0.1,0.2]'."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [float(v) for v in raw]
+    text = str(raw).strip().strip("[]")
+    if not text:
+        return []
+    return [float(part) for part in text.split(",")]
+
+
+def _years_of_experience(bullets: list[dict[str, Any]]) -> int:
+    """Coarse seniority proxy: distinct employers in the Career Graph.
+
+    A real estimate needs position dates, which the importer records but the
+    bullets table does not carry; this keeps comp banding stable until then.
+    """
+    companies = {b.get("company") for b in bullets if b.get("company")}
+    return max(1, len(companies) * 2)
