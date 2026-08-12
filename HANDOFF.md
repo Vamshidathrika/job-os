@@ -1,6 +1,6 @@
 # JOBOS — Handoff / Project State
 
-**Last updated:** 2026-08-11, by Claude (session covering commits `78815b0` → `ce65019`)
+**Last updated:** 2026-08-12, by Claude (session covering commits `78815b0` → `b880b68`)
 
 Read this before touching the repo. It exists because **multiple agent
 sessions have worked on this codebase concurrently and at least once directly
@@ -21,7 +21,7 @@ Full product framing: [`README.md`](README.md).
 
 ## Where things stand right now
 
-**310 tests passing.** `python -m pytest tests/ -q` from repo root
+**333 tests passing.** `python -m pytest tests/ -q` from repo root
 (`.venv` must be active, see Environment below).
 
 ### What is real and working end-to-end
@@ -33,8 +33,33 @@ Full product framing: [`README.md`](README.md).
 - **Warm-path race** — durable DB-backed 7-day state machine
   (`warm_path_races` table). Sources referrers from the operator's own
   LinkedIn connections (imported via `jobos import`), not a paid API.
-- **Entailment gate** — real LLM verifier call (needs a Groq key to actually
-  run; currently untested against a live model, only against mocks).
+- **Entailment gate** — real LLM verifier call, but has zero production
+  callers anywhere in the pipeline yet — nothing invokes it before tailored
+  text would go out. Also routes through `entailment_model` (nvidia_nim),
+  a provider with no configured key and no wiring (see `b880b68`'s fix,
+  which deliberately left this one alone).
+- **LLM key wiring** — `settings.llm.platform_groq_key` is now actually
+  passed to every `acompletion()` call (8 of 9 sites; entailment is the
+  exception above). It previously existed in config and was never passed
+  anywhere, so every call silently relied on an unset `GROQ_API_KEY` env
+  var, failed, and — worse — in the warm-path race, that failure was
+  counted as `gated` (personalization gate rejection), indistinguishable
+  from healthy behaviour. Fixed and split into `gated` vs `llm_failed` at
+  `b880b68`. Verified live: with no real key configured, `jobos race` now
+  correctly reports `llm_failed=20, gated=0` with a real
+  `litellm.BadRequestError` from Groq's actual API in the log — proof the
+  code is right and the only missing piece is the key value itself, which
+  must go in `.env` directly, never pasted into a chat session.
+- **Tier-1 classification was unreachable.** `classify_tier` requires
+  `match_score>=0.65 AND ev_score>=0.60`, but `ev_score` was derived from
+  `EV = p_offer * comp * p_accept` where `p_offer = match_score * 0.35` —
+  so it re-embedded match_score and was capped at 0.35 by construction. A
+  0.9 match on the best comp band scored `ev_score=0.27`. No Tier-1 job
+  could ever exist, so the warm-path race — which only fires on Tier 1 —
+  could never start, for any profile, ever. Fixed at `b880b68`: `ev_score`
+  now measures value alone (comp normalised), independent of match
+  quality. Verified live against a real imported profile: 65 of 108 jobs
+  now correctly classify as Tier 1.
 - **Guarded send path** — suppression list + daily cap enforced in front of
   any outbound email; shadow mode on by default (queues to Band B for human
   approval, never auto-sends).
@@ -62,10 +87,12 @@ Full product framing: [`README.md`](README.md).
   paste-once login screen. `/health` stays public.
   Remaining caveats: tokens never expire (revoke by name to kill one), and
   there is no rate limiting on the auth endpoint.
-- **No LLM path has been run against a real model.** Groq key exists
-  (per user) but hasn't been wired into `.env` or exercised end-to-end. All
-  LLM-dependent code (entailment, tailoring, sequence generation, resume
-  parsing, interview prep) is unit-tested against mocked responses only.
+- ~~**No LLM path has been run against a real model.**~~ **Code-level fix
+  done** (`b880b68`) — key wiring was the actual bug (see above), verified
+  down to a real rejected call from Groq's live API. Still blocked on the
+  user's real key landing in `.env`; nobody has typed a real key value
+  into this repo. All LLM-dependent code remains unit-tested against
+  mocked responses only until that happens.
 - **No real LinkedIn export has been imported.** The importer
   (`jobos/onboarding/linkedin_import.py`) is built and tested against a
   synthetic fixture ZIP, but the user's real export hasn't landed yet.
@@ -110,6 +137,16 @@ part of this history. Evidence and what happened:
 it reintroduces a fabrication, an auth bypass, or a silent-fallback pattern.
 Grep for `except Exception:\s*pass` and hardcoded-looking literals as a first
 pass — that pattern is exactly what caused both regressions above.
+
+**Second collision, benign this time:** while committing `b880b68`, found 4
+of the 8 files it touches (`comment_engine.py`, `interview/prep.py`,
+`profile/optimizer.py`, `tailorer/generator.py`) already carried the
+identical `api_key=settings.llm.platform_groq_key or None` fix from a
+concurrent session — same diagnosis, same fix, independently, almost
+certainly because both sessions read the same gap list in this file. No
+conflict, nothing reverted. Worth noting as the flip side of the warning
+above: concurrent sessions reading this doc converge, they don't only
+collide.
 
 ---
 
@@ -165,17 +202,39 @@ source .venv/bin/activate
 
 ## Recommended next steps, in priority order
 
-1. **Real LinkedIn export + Groq key wiring.** Both exist per the user; get
-   them into `.env` / imported via `jobos import`, then run `jobos run` for
-   real and see what an actual personalized run produces. **This is the only
-   remaining blocker to the product's core claim being demonstrated end to
-   end** — no LLM path has ever been run against a live model.
-2. **Fix the 3 broken seed company board tokens** in
+1. **Get a real Groq key into `.env`.** The code bug is fixed (`b880b68`);
+   this is now purely a credential problem. `JOBOS_LLM_PLATFORM_GROQ_KEY=`
+   in `.env` — never paste the key value into a chat session, type it
+   directly into the file. Then `jobos --user-id <uuid> run` end to end.
+2. **Google Drive + broader Google-account scope — user asked for this,
+   not yet built, needs a scoping decision first.** User wants: resumes
+   generated and saved to their Google Drive, applications sent from their
+   own Gmail, and "excellent at applying jobs and setting interviews"
+   end-to-end. What exists: Gmail send (Composio, guarded by suppression +
+   daily cap + shadow mode), Calendar client (`jobos/integrations/calendar.py`).
+   What doesn't: Drive integration at all, and — the one that needs a real
+   decision, not just code — autonomous job *submission*. Cold apply
+   (`jobos/cold_apply/executor.py`) is deliberately unimplemented; building
+   it means Playwright driving real ATS forms on real employer sites, which
+   is both the highest-risk unverified action in this codebase (many ATS
+   platforms fingerprint and ban bot-submitted applications — doing this
+   wrong could hurt the user's actual applications) and something the user
+   must explicitly choose the risk posture for (autonomous vs.
+   review-then-approve, which is what shadow mode already defaults every
+   other outbound action to). Do not build unattended auto-submit without
+   that conversation happening first.
+   Also: "read the user's LinkedIn connections live" is not the same ask as
+   already-built — the importer reads LinkedIn's own data *export* (a file
+   the user downloads themselves); there is no live LinkedIn API path that
+   can read a profile or connections, and building a scraper is explicitly
+   out of scope (account-ban risk, ToS violation) — this was already
+   explained to the user earlier in this session and holds.
+3. **Fix the 3 broken seed company board tokens** in
    `data/seed_companies.yaml` (Chargebee, Zoho, Swiggy all 404).
-3. **Dashboard**: reconcile the remaining static "phase explainer" panels
+4. **Dashboard**: reconcile the remaining static "phase explainer" panels
    (Phase 1, 2, 4-15 tabs) — right now only Phase 0's stat tiles read real
    data; the rest are documentation-style placeholders with hardcoded sample
    calculations, not live views.
-4. **Auth hardening** (the basics are done, these are the follow-ups):
+5. **Auth hardening** (the basics are done, these are the follow-ups):
    token expiry, rate limiting on failed auth, and an audit trail of token
    use beyond `last_used_at`.
