@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -36,8 +36,12 @@ from jobos.content.comment_engine import generate_smart_comment
 from jobos.profile.optimizer import analyze_profile
 from jobos.interview.prep import generate_prep_pack
 from jobos.followup.nudge import generate_status_nudge
+from jobos.onboarding.linkedin_import import import_profile
+from jobos.onboarding.shadow_mode import ShadowMode
 from jobos.onboarding.wizard import OnboardingWizard
 from jobos.runner.handlers import build_handlers
+from jobos.runner.pipeline import NoJobFoundError, NoVerifiedBulletsError, stage_upload_resume
+from jobos.composio_client.client import ComposioActionError
 
 logger = structlog.get_logger(__name__)
 
@@ -338,6 +342,94 @@ async def ghost_jobs_check() -> list[dict[str, Any]]:
     test_jobs = [{"job_id": "ghost-1", "days_active": 75, "title": "Stale Engineer Role"}]
     return await detect_ghost_jobs(test_jobs)
 
+@app.get("/api/career-graph/summary")
+async def career_graph_summary(
+    tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)
+) -> dict[str, Any]:
+    """Real counts from the Career Graph — no endpoint exposed this before,
+    so the dashboard's Career Graph tab showed only static prose."""
+    bullets_total = await conn.fetchval("SELECT count(*) FROM cg_bullets")
+    bullets_verified = await conn.fetchval(
+        "SELECT count(*) FROM cg_bullets WHERE verification_status = 'verified'"
+    )
+    connections = await conn.fetchval(
+        "SELECT count(*) FROM people WHERE source = 'linkedin_connection'"
+    )
+    return {
+        "bullets_total": bullets_total,
+        "bullets_verified": bullets_verified,
+        "linkedin_connections": connections,
+    }
+
+@app.post("/api/onboarding/linkedin-import")
+async def upload_linkedin_export(
+    file: UploadFile = File(...),
+    tenant: str = Depends(authenticated_tenant),
+    conn: Any = Depends(tenant_db),
+) -> dict[str, int]:
+    """HTTP wrapper around the existing CLI-only LinkedIn import path — no
+    new parsing logic, just an upload handle in front of import_profile."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        return await import_profile(conn, tenant, zip_path=tmp_path)
+    finally:
+        import os
+
+        os.unlink(tmp_path)
+
+@app.get("/api/warmpath/races")
+async def list_warm_path_races(
+    tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)
+) -> list[dict[str, Any]]:
+    """Real warm_path_races rows — the previous UI showed one fictional,
+    hardcoded race ('Stripe — Staff AI Engineer, Day 3 of 7') that did not
+    correspond to any row in this table."""
+    rows = await conn.fetch(
+        """
+        SELECT r.status, r.started_at, r.deadline_at, r.responded_channel,
+               r.resolution, j.title, c.name AS company
+          FROM warm_path_races r
+          JOIN jobs j ON j.id = r.job_id
+          JOIN companies c ON c.id = j.company_id
+         ORDER BY r.started_at DESC
+         LIMIT 50
+        """
+    )
+    return [
+        {
+            "company": row["company"],
+            "title": row["title"],
+            "status": row["status"],
+            "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+            "deadline_at": row["deadline_at"].isoformat() if row["deadline_at"] else None,
+            "responded_channel": row["responded_channel"],
+            "resolution": row["resolution"],
+        }
+        for row in rows
+    ]
+
+@app.get("/api/shadow-mode")
+async def get_shadow_mode(
+    tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)
+) -> dict[str, bool]:
+    return {"enabled": await ShadowMode(conn=conn, tenant_id=tenant).is_enabled()}
+
+@app.post("/api/shadow-mode")
+async def set_shadow_mode(
+    enabled: bool, tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)
+) -> dict[str, bool]:
+    """The previous dashboard toggle was pure client state — clicking it
+    changed nothing about real system behavior. This actually flips
+    tenants.autonomy_mode, which every send-path check reads from."""
+    shadow = ShadowMode(conn=conn, tenant_id=tenant)
+    await (shadow.enable() if enabled else shadow.disable())
+    return {"enabled": await shadow.is_enabled()}
+
 @app.get("/api/onboarding/wizard")
 async def get_wizard_status(tenant: str = Depends(authenticated_tenant)) -> dict[str, Any]:
     wiz = OnboardingWizard(tenant_id=tenant)
@@ -347,3 +439,19 @@ async def get_wizard_status(tenant: str = Depends(authenticated_tenant)) -> dict
 async def submit_wizard_step(req: OnboardingStepReq, tenant: str = Depends(authenticated_tenant)) -> dict[str, Any]:
     wiz = OnboardingWizard(tenant_id=tenant)
     return await wiz.submit_step(req.step_name, req.data)
+
+@app.post("/api/jobs/{job_id}/generate-resume")
+async def generate_resume(
+    job_id: str, tenant: str = Depends(authenticated_tenant)
+) -> dict[str, str]:
+    """Thin wrapper around stage_upload_resume — no new tailoring logic.
+    Uses the pool directly (not the per-request tenant_db connection):
+    stage_upload_resume opens its own tenant-scoped connection internally."""
+    try:
+        return await stage_upload_resume(app.state.pool, tenant, job_id, settings)
+    except NoJobFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except NoVerifiedBulletsError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except ComposioActionError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
