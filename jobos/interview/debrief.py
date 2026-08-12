@@ -84,6 +84,7 @@ async def _structure_notes(notes: dict[str, Any], settings: Settings) -> dict[st
     try:
         response: Any = await acompletion(
             model=settings.llm.tailoring_model,
+            api_key=settings.llm.platform_groq_key or None,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(notes, indent=2, default=str)},

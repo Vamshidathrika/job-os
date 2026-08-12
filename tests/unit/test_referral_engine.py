@@ -220,3 +220,32 @@ def test_parse_touches_tolerates_code_fences():
     touches = _parse_touches(fenced)
     assert touches is not None
     assert len(touches) == 3
+
+
+async def test_sequence_generation_passes_the_platform_key_to_the_llm(mocker):
+    """Regression: settings.llm.platform_groq_key existed but was never
+    passed to acompletion, so every LLM call silently relied on a bare
+    GROQ_API_KEY environment variable that is never set. Every call failed,
+    and the failure was swallowed and mislabeled as a personalization-gate
+    rejection by callers (jobos.runner.warm_paths counts it as "gated")."""
+    from jobos.config import Settings
+
+    settings = Settings()
+    settings.llm.platform_groq_key = "gsk_test_key_123"
+    llm = mocker.patch(
+        "jobos.referral.sequence.acompletion",
+        return_value={
+            "choices": [{"message": {"content": '[{"subject":"s1","body":"b1"},'
+                                                  '{"subject":"s2","body":"b2"},'
+                                                  '{"subject":"s3","body":"b3"}]'}}]
+        },
+    )
+
+    await generate_referral_sequence(
+        referrer={"name": "Ravi", "shared_past_company": ["freshworks"]},
+        job={"title": "Backend Engineer", "company": "Acme"},
+        user_profile=USER_PROFILE,
+        settings=settings,
+    )
+
+    assert llm.call_args.kwargs["api_key"] == "gsk_test_key_123"

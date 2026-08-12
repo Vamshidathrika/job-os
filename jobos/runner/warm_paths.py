@@ -12,7 +12,7 @@ from typing import Any
 import structlog
 
 from jobos.referral.network_mapper import map_existing_network
-from jobos.referral.sequence import generate_referral_sequence
+from jobos.referral.sequence import generate_referral_sequence, has_real_personalization
 from jobos.warm_path.decision import should_hold_application
 from jobos.warm_path.race import WarmPathRace
 
@@ -33,7 +33,14 @@ async def start_races_for_tier_1(
     Returns:
         started — races begun;
         no_warm_path — Tier-1 jobs where the operator knows nobody;
-        gated — contacts dropped by the personalisation gate.
+        gated — contacts dropped by the personalisation gate (no real shared
+            context — this is a genuine, working-as-intended rejection);
+        llm_failed — the gate passed but sequence generation itself failed
+            (bad/missing LLM key, provider outage, etc.). Counted separately
+            from `gated` because it means "we could have raced this but the
+            infrastructure broke", not "the candidate wasn't warm enough" —
+            conflating the two previously made a misconfigured API key look
+            identical to healthy gate behaviour.
     """
     candidates = await conn.fetch(
         """
@@ -57,7 +64,7 @@ async def start_races_for_tier_1(
         )
     ]
 
-    started = no_warm_path = gated = 0
+    started = no_warm_path = gated = llm_failed = 0
 
     for candidate in candidates:
         if not should_hold_application(
@@ -85,22 +92,35 @@ async def start_races_for_tier_1(
             continue
 
         referrer = reachable[0]
+        referrer_facts = {
+            "name": referrer.get("full_name"),
+            "title": referrer.get("title"),
+            "company_domain": referrer.get("company_domain"),
+            # A mutual employer is the shared context that clears the gate.
+            "shared_past_company": [company] if referrer.get("contact_source") == "linkedin_connection" else [],
+        }
+
+        if not has_real_personalization(referrer_facts):
+            gated += 1
+            logger.info("referral_gated_no_shared_context", job_id=str(candidate["job_id"]), company=company)
+            continue
+
         touches = await generate_referral_sequence(
-            referrer={
-                "name": referrer.get("full_name"),
-                "title": referrer.get("title"),
-                "company_domain": referrer.get("company_domain"),
-                # A mutual employer is the shared context that clears the gate.
-                "shared_past_company": [company] if referrer.get("contact_source") == "linkedin_connection" else [],
-            },
+            referrer=referrer_facts,
             job={"title": candidate["title"], "company": company},
             user_profile={"name": "the candidate"},
             settings=settings,
         )
 
         if not touches:
-            gated += 1
-            logger.info("referral_gated", job_id=str(candidate["job_id"]), company=company)
+            # The gate already passed above, so an empty result here means
+            # generation itself failed (LLM key/provider), not that the
+            # candidate lacked real shared context.
+            llm_failed += 1
+            logger.warning(
+                "referral_sequence_generation_failed_after_gate_passed",
+                job_id=str(candidate["job_id"]), company=company,
+            )
             continue
 
         for touch in touches:
@@ -111,6 +131,12 @@ async def start_races_for_tier_1(
         started += 1
 
     logger.info(
-        "tier_1_races_processed", started=started, no_warm_path=no_warm_path, gated=gated
+        "tier_1_races_processed",
+        started=started, no_warm_path=no_warm_path, gated=gated, llm_failed=llm_failed,
     )
-    return {"started": started, "no_warm_path": no_warm_path, "gated": gated}
+    return {
+        "started": started,
+        "no_warm_path": no_warm_path,
+        "gated": gated,
+        "llm_failed": llm_failed,
+    }

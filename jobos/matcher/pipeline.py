@@ -23,8 +23,24 @@ logger = structlog.get_logger(__name__)
 # than used directly: a 0.8 cosine match is not an 80% chance of an offer.
 P_OFFER_SCALE = 0.35
 
-# Normalises EV (rupees) onto the 0-1 scale classify_tier expects.
-EV_NORMALISATION_INR = 5_000_000.0
+# Top of the cold-start comp ladder in comp/predictor.py (senior band, India).
+# ev_score is expressed as a fraction of this, so a senior-band role scores
+# near 1.0 and a junior one near 0.25.
+COMP_REFERENCE_INR = 5_000_000.0
+
+# Mirrors calculate_ev's default, so both scales agree on how likely an offer
+# is to be accepted.
+DEFAULT_P_ACCEPT = 0.85
+
+# classify_tier(match_score, ev_score) weighs match quality and opportunity
+# value as two INDEPENDENT dimensions. ev_score must therefore not re-embed
+# match_score. Deriving it from expected value would do exactly that —
+# EV = p_offer x comp x p_accept, and p_offer is itself match_score damped by
+# P_OFFER_SCALE — which both double-counts the match and caps ev_score at
+# 0.35, below the gate's 0.60. Tier 1 was unreachable and the warm-path race,
+# which only fires on Tier 1, could never start. So ev_score measures the
+# value dimension alone: expected comp, normalised. Raw EV is still computed
+# and stored for ranking, which is what it is actually good for.
 
 
 def build_profile_text(bullets: list[dict[str, Any]]) -> str:
@@ -84,8 +100,11 @@ async def run_matching(conn: Any, user_id: str, limit: int = 500) -> dict[str, i
         band = predict_salary_band(
             title=job["title"] or "", location=job["location"] or "", yoe=_years_of_experience(bullets)
         )
+        # Raw EV drives ranking (what is this opportunity worth overall).
         ev = calculate_ev(p_offer=score * P_OFFER_SCALE, predicted_comp_p50=band["p50"])
-        ev_score = min(1.0, ev / EV_NORMALISATION_INR)
+        # ev_score drives tiering, and measures value only — see the note on
+        # COMP_REFERENCE_INR for why it must not re-embed match_score.
+        ev_score = min(1.0, (band["p50"] * DEFAULT_P_ACCEPT) / COMP_REFERENCE_INR)
         tier = classify_tier(match_score=score, ev_score=ev_score)
 
         await conn.execute(

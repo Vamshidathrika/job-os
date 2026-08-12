@@ -78,6 +78,7 @@ async def generate_referral_sequence(
     try:
         response: Any = await acompletion(
             model=settings.llm.tailoring_model,
+            api_key=settings.llm.platform_groq_key or None,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},

@@ -143,6 +143,7 @@ async def _structure_with_llm(text: str, settings: Settings) -> dict[str, Any] |
     try:
         response: Any = await acompletion(
             model=settings.llm.tailoring_model,
+            api_key=settings.llm.platform_groq_key or None,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 # Long resumes are truncated: the tail is usually references

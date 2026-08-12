@@ -139,3 +139,27 @@ async def test_rerun_does_not_duplicate_touches(tenant_a_conn, tenant_a_id, db_p
         "SELECT count(*) FROM action_queue WHERE action_type = 'referral_touch'"
     )
     assert touches == 3, "an already-running race must not be restarted"
+
+
+async def test_llm_failure_is_not_counted_as_gated(tenant_a_conn, tenant_a_id, db_pool, mocker):
+    """Regression: a candidate that clears the personalisation gate but hits
+    an LLM failure (bad/missing key, provider outage) was previously counted
+    as 'gated' — indistinguishable from a genuine no-shared-context
+    rejection. That silently disguised a misconfigured Groq key as normal
+    gate behaviour.
+    """
+    mocker.patch(
+        "jobos.referral.sequence.acompletion", side_effect=RuntimeError("no api_key configured")
+    )
+    await _tier_1_job(tenant_a_conn, tenant_a_id, db_pool)
+    await tenant_a_conn.execute(
+        "INSERT INTO people (id, user_id, full_name, company_domain, email, source) "
+        "VALUES (gen_random_uuid(), $1, 'Ravi Kumar', 'Globex', 'ravi@globex.example', 'linkedin_connection')",
+        tenant_a_id,
+    )
+
+    counts = await start_races_for_tier_1(tenant_a_conn, str(tenant_a_id))
+
+    assert counts["llm_failed"] == 1
+    assert counts["gated"] == 0
+    assert counts["started"] == 0
