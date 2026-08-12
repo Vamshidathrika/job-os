@@ -82,6 +82,23 @@ API_TOKENS_EXPIRES_AT_DDL = """
 ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS expires_at timestamptz;
 """
 
+# Tracks failed authentication attempts by source IP so repeated bad tokens
+# can be rate-limited. Deliberately NOT under row-level security, for the
+# same reason as api_tokens: authentication must resolve before any tenant
+# context exists to filter by.
+AUTH_FAILURES_DDL = """
+CREATE TABLE IF NOT EXISTS auth_failures (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    ip_address text,
+    attempted_at timestamptz DEFAULT now()
+);
+"""
+
+AUTH_FAILURES_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS auth_failures_ip_attempted_idx
+    ON auth_failures (ip_address, attempted_at);
+"""
+
 SUPPRESSION_LIST_DDL = """
 CREATE TABLE IF NOT EXISTS suppression_list (
     email_hash text PRIMARY KEY,
@@ -343,4 +360,6 @@ ALL_DDL = [
     API_TOKENS_DDL,
     API_TOKENS_INDEX_DDL,
     API_TOKENS_EXPIRES_AT_DDL,
+    AUTH_FAILURES_DDL,
+    AUTH_FAILURES_INDEX_DDL,
 ]

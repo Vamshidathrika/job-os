@@ -28,9 +28,11 @@ async def client(db_pool, setup_schema):
 async def clean(db_pool, setup_schema):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM api_tokens")
+        await conn.execute("DELETE FROM auth_failures")
     yield
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM api_tokens")
+        await conn.execute("DELETE FROM auth_failures")
 
 
 @pytest.fixture
@@ -88,3 +90,26 @@ async def test_health_stays_public(client):
     """Liveness probes must not need a credential."""
     response = await client.get("/health")
     assert response.status_code == 200
+
+
+async def test_repeated_failed_auth_attempts_get_rate_limited(client):
+    """5 bad tokens each fail normally; the 6th is blocked before it is even checked."""
+    for _ in range(5):
+        response = await client.get(
+            "/api/stats", headers={"Authorization": "Bearer jobos_wrong-token"}
+        )
+        assert response.status_code == 401
+
+    response = await client.get(
+        "/api/stats", headers={"Authorization": "Bearer jobos_wrong-token"}
+    )
+    assert response.status_code == 429
+
+
+async def test_rate_limit_blocks_a_valid_token_once_tripped(client, token_a):
+    """Once the IP is over the limit, even a real token is refused outright."""
+    for _ in range(5):
+        await client.get("/api/stats", headers={"Authorization": "Bearer jobos_wrong-token"})
+
+    response = await client.get("/api/stats", headers={"Authorization": f"Bearer {token_a}"})
+    assert response.status_code == 429

@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -26,6 +26,7 @@ from jobos.dashboard.stats import get_pipeline_stats
 from jobos.dashboard.timeline import get_activity_timeline
 from jobos.db.pool import create_pool, global_conn, tenant_conn
 from jobos.vault.api_tokens import InvalidTokenError, resolve_tenant
+from jobos.vault.auth_rate_limit import is_rate_limited, record_failure
 from jobos.policy.multi_tenant import PROHIBITIONS
 from jobos.hiring_radar.sources import scan_funding_rss
 from jobos.referral.scorer import score_referrer
@@ -67,7 +68,7 @@ app.add_middleware(
 )
 
 
-async def authenticated_tenant(authorization: str = Header(default="")) -> str:
+async def authenticated_tenant(request: Request, authorization: str = Header(default="")) -> str:
     """Resolve the acting tenant from the caller's bearer token.
 
     Identity comes from a secret the caller proves they hold — never from a
@@ -75,18 +76,30 @@ async def authenticated_tenant(authorization: str = Header(default="")) -> str:
     validating it against the token would still leave a second, weaker path
     to declaring who you are.
     """
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(
-            status_code=401,
-            detail="Authorization: Bearer <token> required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # request.client is None behind some ASGI/test harness setups; treat that
+    # as "can't rate-limit this caller" rather than crashing or grouping
+    # every such caller together (see jobos.vault.auth_rate_limit).
+    ip_address = request.client.host if request.client else None
 
     async with global_conn(app.state.pool) as conn:
+        if await is_rate_limited(conn, ip_address):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed authentication attempts. Try again later.",
+            )
+
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            raise HTTPException(
+                status_code=401,
+                detail="Authorization: Bearer <token> required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         try:
             return await resolve_tenant(conn, token.strip())
         except InvalidTokenError as e:
+            await record_failure(conn, ip_address)
             # Malformed, unknown and revoked all fail identically so a caller
             # cannot probe for which tokens exist.
             raise HTTPException(
