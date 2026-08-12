@@ -47,11 +47,26 @@ def build_handlers(
         )
 
     async def submit_application(payload: dict[str, Any]) -> dict[str, Any]:
-        """Cold apply is not implemented; refuse rather than claim success."""
+        """Fill a real application form and prepare it for human review.
+
+        This never actually submits anything — see ColdApplyExecutor's
+        module docstring. Because of that, it is safe to run automatically
+        as a Band A action (nothing irreversible happens); what must never
+        be Band A is a hypothetical future action type that actually clicks
+        submit, which does not exist anywhere in this codebase.
+        """
         from jobos.cold_apply.executor import ColdApplyExecutor
 
+        job_url = payload.get("job_url", "")
+        if not job_url:
+            raise ValueError("submit_application payload has no 'job_url'")
+
         executor = ColdApplyExecutor(tenant_id=tenant_id)
-        return await executor.submit_application(payload.get("job_url", ""), dry_run=False)
+        return await executor.submit_application(
+            job_url,
+            resume_path=payload.get("resume_path"),
+            answers=payload.get("answers") or {},
+        )
 
     async def publish_post(payload: dict[str, Any]) -> dict[str, Any]:
         """LinkedIn publishing is not wired up yet."""

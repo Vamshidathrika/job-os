@@ -13,6 +13,7 @@ from typing import Any, AsyncGenerator
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import structlog
 
@@ -36,6 +37,7 @@ from jobos.profile.optimizer import analyze_profile
 from jobos.interview.prep import generate_prep_pack
 from jobos.followup.nudge import generate_status_nudge
 from jobos.onboarding.wizard import OnboardingWizard
+from jobos.runner.handlers import build_handlers
 
 logger = structlog.get_logger(__name__)
 
@@ -272,9 +274,44 @@ async def list_actions(band: str = "A", tenant: str = Depends(authenticated_tena
 
 @app.post("/api/actions/{action_id}/execute")
 async def execute_action(action_id: str, tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)) -> dict[str, Any]:
+    """Run the real handler for a queued action — this is what "approve" in
+    the dashboard actually does. It previously marked every action
+    'completed' with a fixed {"executed": True} regardless of what the
+    action was, without running anything: a human clicking approve on a
+    prepared cold-apply had no real effect. Band A actions this endpoint can
+    reach are all safe to run on approval (referral_touch is guarded by
+    suppression+cap; submit_application only fills and screenshots, never
+    submits — see ColdApplyExecutor's docstring). Band B/C actions stay
+    queued until a human acts on them through this same endpoint.
+    """
+    row = await conn.fetchrow(
+        "SELECT action_type, payload FROM action_queue WHERE id = $1::uuid", action_id
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No action {action_id!r}")
+
+    import json
+
+    handlers = build_handlers(conn, tenant)
+    handler = handlers.get(row["action_type"])
+    if handler is None:
+        raise HTTPException(
+            status_code=422, detail=f"No handler for action type {row['action_type']!r}"
+        )
+
     queue = ActionQueue(conn=conn, tenant_id=tenant)
-    await queue.mark_complete(action_id=action_id, result={"executed": True})
-    return {"action_id": action_id, "status": "completed"}
+    try:
+        result = await handler(json.loads(row["payload"]))
+    except Exception as e:
+        # Must return, not raise: this connection is inside one transaction
+        # for the whole request (see tenant_conn), so raising here would
+        # roll back the mark_failed write below along with everything else —
+        # the failure would vanish from the DB the instant it was recorded.
+        await queue.mark_failed(action_id=action_id, error=str(e))
+        return JSONResponse(status_code=502, content={"action_id": action_id, "status": "failed", "error": str(e)})
+
+    await queue.mark_complete(action_id=action_id, result=result)
+    return {"action_id": action_id, "status": "completed", "result": result}
 
 @app.post("/api/interview/prep")
 async def generate_prep(req: InterviewPrepReq) -> dict[str, Any]:

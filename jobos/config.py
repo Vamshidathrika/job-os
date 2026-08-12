@@ -58,8 +58,12 @@ class LLMSettings(BaseSettings):
     platform_groq_key: str = ""
     platform_openrouter_key: str = ""
 
-    # Default models (can be overridden per-tenant via BYOK)
-    tailoring_model: str = "groq/llama-3.3-70b-versatile"
+    # Default models (can be overridden per-tenant via BYOK, or here via
+    # JOBOS_LLM_TAILORING_MODEL). llama-3.1-8b-instant over 70b-versatile:
+    # smaller, faster, and Groq's free tier grants it a materially higher
+    # requests-per-day ceiling — the right default while running on free
+    # credits during testing, at the cost of some tailoring quality.
+    tailoring_model: str = "groq/llama-3.1-8b-instant"
     entailment_model: str = "nvidia_nim/meta/llama-3.1-70b-instruct"
     # Local ONNX model — no API key, no quota, no network at inference time.
     # Set to a litellm route (e.g. 'cloudflare/@cf/baai/bge-base-en-v1.5') to

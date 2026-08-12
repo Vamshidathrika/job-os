@@ -10,9 +10,11 @@ from jobos.action_queue.executor import ActionExecutor
 from jobos.action_queue.queue import ActionQueue
 from jobos.db.pool import global_conn, tenant_conn
 from jobos.ingestion.seed_companies import seed_companies
+from jobos.integrations.drive import DriveClient
 from jobos.matcher.pipeline import run_matching
 from jobos.runner.handlers import build_handlers
 from jobos.runner.warm_paths import start_races_for_tier_1
+from jobos.tailorer.generator import generate_tailored_resume
 from jobos.warm_path.race import WarmPathRace, find_expired_races
 from jobos.workers.global_ingestion import GlobalIngestionWorker
 
@@ -57,6 +59,79 @@ async def stage_work(pool: Any, user_id: str) -> dict[str, int]:
         queue = ActionQueue(conn=conn, tenant_id=user_id)
         executor = ActionExecutor(queue, handlers=build_handlers(conn, user_id))
         return await executor.process_band_a()
+
+
+class NoJobFoundError(LookupError):
+    """Raised when the given job_id doesn't exist."""
+
+
+class NoVerifiedBulletsError(ValueError):
+    """Raised when the tenant has no verified Career Graph bullets to tailor from."""
+
+
+async def stage_upload_resume(
+    pool: Any, user_id: str, job_id: str, settings: Any
+) -> dict[str, str]:
+    """Tailor a resume for one job and save it to the tenant's Google Drive.
+
+    Unlike the other stages, this operates on a single job rather than the
+    whole tenant — it's invoked per-application, not per pipeline run, so it
+    is deliberately not part of run_full_pipeline's automatic sequence.
+
+    Args:
+        pool: The connection pool.
+        user_id: The tenant this resume is for.
+        job_id: The job to tailor against.
+        settings: Application settings, forwarded to the tailorer.
+
+    Returns:
+        dict with file_id and web_view_link from Drive, plus used_bullet_ids.
+
+    Raises:
+        NoJobFoundError: job_id doesn't exist.
+        NoVerifiedBulletsError: nothing verified to tailor from.
+        ComposioActionError: the Drive upload itself failed.
+    """
+    async with tenant_conn(pool, user_id) as conn:
+        job = await conn.fetchrow(
+            "SELECT title, description FROM jobs WHERE id = $1::uuid", job_id
+        )
+        if job is None:
+            raise NoJobFoundError(f"No job {job_id!r}")
+
+        bullets = [
+            dict(row)
+            for row in await conn.fetch(
+                "SELECT id, bullet_text, role, company, metric FROM cg_bullets "
+                "WHERE user_id = $1::uuid AND verification_status = 'verified'",
+                user_id,
+            )
+        ]
+        if not bullets:
+            raise NoVerifiedBulletsError(
+                "No verified Career Graph bullets — nothing safe to tailor from"
+            )
+
+        tailored = await generate_tailored_resume(
+            job_description=job["description"] or job["title"] or "",
+            verified_bullets=bullets,
+            settings=settings,
+        )
+        if not tailored["tailored_text"]:
+            raise NoVerifiedBulletsError(
+                "Tailoring produced no usable text (see logs for the underlying cause)"
+            )
+
+        drive = DriveClient(tenant_id=user_id)
+        folder = await drive.ensure_folder()
+        uploaded = await drive.upload_resume(
+            tenant_id=user_id,
+            filename=f"resume-{job['title'] or job_id}.txt",
+            text_content=tailored["tailored_text"],
+            folder_id=folder["folder_id"],
+        )
+
+    return {**uploaded, "used_bullet_ids": tailored["used_bullet_ids"]}
 
 
 async def run_full_pipeline(

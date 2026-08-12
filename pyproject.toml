@@ -53,6 +53,10 @@ dependencies = [
 
     # Local ONNX embeddings
     "fastembed>=0.4.0",
+
+    # Cold-apply form filling — load-bearing now, not optional: run
+    # `playwright install chromium` after installing.
+    "playwright>=1.49.0",
 ]
 
 [project.scripts]
@@ -69,9 +73,6 @@ dev = [
     "ruff>=0.8.0",
     "pyright>=1.1.390",
     "factory-boy>=3.3.0",
-]
-playwright = [
-    "playwright>=1.49.0",
 ]
 aws = [
     # Required only when JOBOS_VAULT_KMS_PROVIDER=aws

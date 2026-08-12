@@ -19,6 +19,7 @@ from jobos.runner.pipeline import (
     stage_match,
     stage_race,
     stage_seed,
+    stage_upload_resume,
     stage_work,
 )
 
@@ -41,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("match", help="Score jobs against your profile")
     sub.add_parser("race", help="Start and resolve warm-path races")
     sub.add_parser("work", help="Execute due queued actions")
+
+    resume = sub.add_parser("resume", help="Tailor a resume for one job and save it to Drive")
+    resume.add_argument("--job-id", required=True)
 
     run = sub.add_parser("run", help="Run the whole pipeline")
     run.add_argument("--seed-file")
@@ -101,6 +105,8 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             return await stage_race(pool, args.user_id, settings)
         if args.command == "work":
             return await stage_work(pool, args.user_id)
+        if args.command == "resume":
+            return await stage_upload_resume(pool, args.user_id, args.job_id, settings)
         return await run_full_pipeline(pool, args.user_id, settings, seed_path=args.seed_file)
     finally:
         await pool.close()

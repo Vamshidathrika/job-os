@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<!--
+Local test fixture only — never fetched from or submitted to any live site.
+
+Field names/structure are copied verbatim from Greenhouse's own official Job
+Board API documentation (https://developers.greenhouse.io/job-board.html,
+"HTML Form for Job Application Submission"), not scraped or guessed. This is
+what a real embedded Greenhouse application form's fields are actually named,
+so ColdApplyExecutor can be exercised against a realistic structure without
+Playwright ever opening a live employer's page.
+-->
+<html>
+<head><title>Test Fixture — Greenhouse-style Application Form</title></head>
+<body>
+  <form id="application_form" method="POST" enctype="multipart/form-data">
+    <input type="hidden" name="id" value="55555" />
+    <input type="hidden" name="mapped_url_token" value="token12345" />
+
+    <label>First Name <input type="text" name="first_name" /></label><br/>
+    <label>Last Name <input type="text" name="last_name" /></label><br/>
+    <label>Email <input type="text" name="email" /></label><br/>
+    <label>Phone <input type="text" name="phone" /></label><br/>
+    <label>Resume <input type="file" name="resume" /></label><br/>
+    <label>Cover Letter <input type="file" name="cover_letter" /></label><br/>
+
+    <!-- Custom questions are opaque question_<id> names — only the label
+         text says what they ask, exactly like real Greenhouse forms. This is
+         why field matching has to be label-driven fuzzy matching, not a
+         fixed name map. -->
+    <label>LinkedIn Profile <input type="text" name="question_5555" /></label><br/>
+    <label>Years of Experience <input type="text" name="question_5556" /></label><br/>
+    <label>Are you legally authorized to work? <select name="question_3333">
+      <option></option>
+      <option value="1">Yes</option>
+      <option value="0">No</option>
+    </select></label><br/>
+
+    <label>
+      <input type="checkbox" name="data_compliance[gdpr_consent_given]" value="1" />
+      I consent to data processing.
+    </label><br/>
+
+    <input type="submit" name="submit_application_button" value="Submit Application" />
+  </form>
+</body>
+</html>
