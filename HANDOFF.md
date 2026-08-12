@@ -21,7 +21,7 @@ Full product framing: [`README.md`](README.md).
 
 ## Where things stand right now
 
-**365 tests passing** as of `7d909c0`. `python -m pytest tests/ -q` from
+**408 tests passing** as of `75e7738`. `python -m pytest tests/ -q` from
 repo root (`.venv` must be active, see Environment below).
 
 ### What is real and working end-to-end
@@ -143,12 +143,44 @@ repo root (`.venv` must be active, see Environment below).
   (`jobos/onboarding/linkedin_import.py`) is built and tested against a
   synthetic fixture ZIP, and now also reachable from the dashboard's
   Profile page via upload, but the user's real export hasn't landed yet.
-- **`jobos/api/main.py` test coverage is partial, not zero.** The 4 newest
-  endpoints (pending-actions, reject, linkedin-import, generate-resume) have
-  integration tests. Older endpoints (stats, jobs, comp, content, profile,
-  security/status, career-graph/summary, warmpath/races, shadow-mode,
-  onboarding/wizard) still don't — every "real" claim about those was
-  verified by manual `curl`/browser screenshot, not an automated test.
+- ~~**`jobos/api/main.py` test coverage is partial**~~ **Done.** All 28
+  routes now have integration tests (10 new files, 43 tests, commits
+  `5c9fee0`…`75e7738`). Real bugs surfaced while writing them, not fixed —
+  see "Real findings from the test-coverage pass" below.
+
+### Real findings from the test-coverage pass (2026-08-12) — read before assuming these are fine
+
+- **9 routes have zero authentication**: `comp/predict`, `comp/deflect`,
+  `referral/score`, `referral/candidates`, `content/generate`,
+  `content/comment`, `interview/prep`, `followup/nudge`,
+  `integrations/status`, `calibration/ghost-jobs`, `radar/signals`,
+  `profile/analyze` — none take a `tenant`/`conn` param at all, so this
+  isn't a cross-tenant data leak (they touch no per-tenant DB rows), but
+  `content/generate`, `content/comment`, and `interview/prep` call a real
+  LLM (Groq via litellm) with **no rate limiting and no auth** — anyone who
+  can reach this API can run up the account's Groq usage for free. The
+  dashboard itself calls these without an `Authorization` header too
+  (`dashboard/src/App.tsx`'s `handlePredictComp`/`handleGenerateContent`/
+  etc.), so this may be intentional ("public utility endpoints") rather
+  than an oversight — **flagged to the user, not yet fixed**, since closing
+  it means both adding `Depends(authenticated_tenant)` here and updating
+  every dashboard fetch call that hits them, a real behavior change someone
+  should decide on rather than a bot silently deciding for them.
+- **`GET /api/followup/nudge` has a real bug**, unrelated to auth: `main.py`
+  builds `{"company": ..., "title": ...}` but
+  `generate_status_nudge` reads `interview['company_name']`/`['role_title']`
+  — the query params it takes (`?company=...&role=...`) never actually
+  reach the generated nudge text. Small, but real — the endpoint's `company`
+  param is currently a no-op.
+- **`GET /api/warmpath/status`** is a pure decision calculator over
+  explicit query params — it does **not** read the real `warm_path_races`
+  table, on purpose (own docstring says so, to avoid pretending to know a
+  real race's progress it wasn't given). Don't confuse it with
+  `GET /api/warmpath/races`, which is the real one.
+- **`GET /api/referral/candidates`** always calls `find_referrers(domain,
+  ..., apollo=None)` — there's no way to inject a real Apollo client
+  through this endpoint today, so it always returns `[]` in practice
+  regardless of what's in the `people` table.
 
 ---
 
@@ -261,13 +293,15 @@ source .venv/bin/activate
    account. Confirming that needs either a live Composio API call in that
    endpoint, or the user completing the connection UI and someone checking
    Composio's dashboard directly.
-4. **Expand `jobos/api/main.py` test coverage** to the older endpoints
-   listed above (stats, jobs, comp, content, profile, security/status,
-   career-graph/summary, warmpath/races, shadow-mode, onboarding/wizard) —
-   the pattern from `tests/integration/test_api_execute_action.py` /
-   `test_generate_resume_endpoint.py` / `test_linkedin_upload_endpoint.py`
-   is established and easy to repeat per-endpoint.
-5. **Re-add the dashboard's top metrics strip somewhere**, or decide
+4. **Decide whether the 9 unauthenticated routes should get auth.** See
+   "Real findings from the test-coverage pass" above — needs a human
+   decision (it's a real behavior change touching the dashboard too), not
+   a unilateral code change. If yes: add `Depends(authenticated_tenant)` to
+   each, then update the matching `fetch()` calls in `dashboard/src/App.tsx`
+   to send the bearer token.
+5. **Fix the `followup/nudge` company/title key mismatch** — see above,
+   small isolated bug once someone's looking at that file anyway.
+6. **Re-add the dashboard's top metrics strip somewhere**, or decide
    deliberately not to. The new workflow-sidebar dashboard (see above)
    dropped the Jobs Tracked / Applications Sent / Interviews Scheduled /
    RLS Rules stat tiles — they had no natural home in the new 6-section IA
