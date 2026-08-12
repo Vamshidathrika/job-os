@@ -97,7 +97,7 @@ async def authenticated_tenant(request: Request, authorization: str = Header(def
             )
 
         try:
-            return await resolve_tenant(conn, token.strip())
+            return await resolve_tenant(conn, token.strip(), ip_address=ip_address)
         except InvalidTokenError as e:
             await record_failure(conn, ip_address)
             # Malformed, unknown and revoked all fail identically so a caller

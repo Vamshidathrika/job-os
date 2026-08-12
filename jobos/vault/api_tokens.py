@@ -91,8 +91,39 @@ async def create_token(
     return token
 
 
-async def resolve_tenant(conn: Any, token: str) -> str:
+async def _record_audit(
+    conn: Any, *, user_id: str | None, token_hash: str, success: bool, ip_address: str | None
+) -> None:
+    """Insert one row into api_token_audit for an authentication attempt.
+
+    Never logs the raw plaintext token — only its SHA-256, which is already
+    what the caller looked the token up by.
+    """
+    await conn.execute(
+        """
+        INSERT INTO api_token_audit (user_id, token_hash, success, ip_address)
+        VALUES ($1::uuid, $2, $3, $4)
+        """,
+        user_id,
+        token_hash,
+        success,
+        ip_address,
+    )
+
+
+async def resolve_tenant(conn: Any, token: str, ip_address: str | None = None) -> str:
     """Resolve a bearer token to the tenant it authenticates.
+
+    Args:
+        conn: A connection; api_tokens/api_token_audit have no RLS.
+        token: The bearer token presented by the caller.
+        ip_address: The caller's source IP, recorded on the audit row only
+            (never used to authenticate). Optional so existing two-argument
+            callers are unaffected.
+
+    Every attempt — success or failure — is recorded in api_token_audit
+    before returning or raising, in addition to last_used_at being bumped on
+    success.
 
     Raises:
         InvalidTokenError: if the token is malformed, unknown or revoked.
@@ -100,7 +131,12 @@ async def resolve_tenant(conn: Any, token: str) -> str:
             tokens exist.
     """
     candidate = (token or "").strip()
+    token_hash = _hash(candidate)
+
     if not candidate.startswith(TOKEN_PREFIX) or len(candidate) <= len(TOKEN_PREFIX):
+        await _record_audit(
+            conn, user_id=None, token_hash=token_hash, success=False, ip_address=ip_address
+        )
         raise InvalidTokenError("Malformed API token")
 
     row = await conn.fetchrow(
@@ -111,12 +147,18 @@ async def resolve_tenant(conn: Any, token: str) -> str:
           AND (expires_at IS NULL OR expires_at > now())
         RETURNING user_id
         """,
-        _hash(candidate),
+        token_hash,
     )
     if row is None:
         logger.warning("api_token_rejected")
+        await _record_audit(
+            conn, user_id=None, token_hash=token_hash, success=False, ip_address=ip_address
+        )
         raise InvalidTokenError("Unknown or revoked API token")
 
+    await _record_audit(
+        conn, user_id=row["user_id"], token_hash=token_hash, success=True, ip_address=ip_address
+    )
     return str(row["user_id"])
 
 

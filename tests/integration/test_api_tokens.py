@@ -22,9 +22,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 async def clean(db_pool, setup_schema):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM api_tokens")
+        await conn.execute("DELETE FROM api_token_audit")
     yield
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM api_tokens")
+        await conn.execute("DELETE FROM api_token_audit")
 
 
 async def test_created_token_resolves_to_its_tenant(db_pool, tenant_a_id):
@@ -135,3 +137,21 @@ async def test_token_with_future_expiry_still_resolves(db_pool, tenant_a_id):
         token = await create_token(conn, str(tenant_a_id), name="laptop", expires_in_days=30)
 
         assert await resolve_tenant(conn, token) == str(tenant_a_id)
+
+
+async def test_resolve_tenant_audits_success_and_failure(db_pool, tenant_a_id):
+    """Every authentication attempt leaves a trail beyond just last_used_at."""
+    async with db_pool.acquire() as conn:
+        token = await create_token(conn, str(tenant_a_id), name="laptop")
+
+        await resolve_tenant(conn, token)
+        with pytest.raises(InvalidTokenError):
+            await resolve_tenant(conn, f"{TOKEN_PREFIX}not-a-real-token")
+
+        rows = await conn.fetch("SELECT success, user_id FROM api_token_audit")
+
+    assert len(rows) == 2
+    success_row = next(r for r in rows if r["success"])
+    failure_row = next(r for r in rows if not r["success"])
+    assert success_row["user_id"] == tenant_a_id
+    assert failure_row["user_id"] is None

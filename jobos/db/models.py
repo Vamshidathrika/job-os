@@ -99,6 +99,24 @@ CREATE INDEX IF NOT EXISTS auth_failures_ip_attempted_idx
     ON auth_failures (ip_address, attempted_at);
 """
 
+# Records every authentication attempt (success or failure), unlike
+# api_tokens.last_used_at which only ever holds the most recent moment.
+# user_id is nullable: a failed attempt (unknown, malformed, revoked, or
+# expired token) never resolves to anyone. Only the token's SHA-256 is
+# stored, never the plaintext. Deliberately NOT under row-level security,
+# for the same reason as api_tokens: authentication must resolve before any
+# tenant context exists to filter by.
+API_TOKEN_AUDIT_DDL = """
+CREATE TABLE IF NOT EXISTS api_token_audit (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid,
+    token_hash text,
+    success boolean NOT NULL,
+    ip_address text,
+    created_at timestamptz DEFAULT now()
+);
+"""
+
 SUPPRESSION_LIST_DDL = """
 CREATE TABLE IF NOT EXISTS suppression_list (
     email_hash text PRIMARY KEY,
@@ -362,4 +380,5 @@ ALL_DDL = [
     API_TOKENS_EXPIRES_AT_DDL,
     AUTH_FAILURES_DDL,
     AUTH_FAILURES_INDEX_DDL,
+    API_TOKEN_AUDIT_DDL,
 ]
