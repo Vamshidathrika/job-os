@@ -1,6 +1,6 @@
 # JOBOS — Handoff / Project State
 
-**Last updated:** 2026-08-12, by Claude (session covering commits `78815b0` → `b880b68`)
+**Last updated:** 2026-08-12, by Claude (session covering commits `148b892` → `2689f4a`, plus an in-flight auth-hardening agent not yet landed — check `git log --oneline -5` before trusting the auth section below)
 
 Read this before touching the repo. It exists because **multiple agent
 sessions have worked on this codebase concurrently and at least once directly
@@ -21,8 +21,10 @@ Full product framing: [`README.md`](README.md).
 
 ## Where things stand right now
 
-**333 tests passing.** `python -m pytest tests/ -q` from repo root
-(`.venv` must be active, see Environment below).
+**359 tests passing** as of `2689f4a` (before the auth-hardening agent's new
+tests land — re-run and update this number once they do).
+`python -m pytest tests/ -q` from repo root (`.venv` must be active, see
+Environment below).
 
 ### What is real and working end-to-end
 
@@ -66,17 +68,59 @@ Full product framing: [`README.md`](README.md).
 - **CLI orchestrator** — `jobos` command, installed via
   `[project.scripts]`. Runs the whole pipeline or any single stage.
 - **Dashboard API** — as of `ce65019`, every endpoint reads real Postgres
-  state. No endpoint fabricates a fallback number anymore (this was a real
-  bug fixed this session — see below).
+  state. No endpoint fabricates a fallback number anymore.
+- **Dashboard UI redesigned around the actual job-search workflow**
+  (`de1d829`). The old UI was 15 tabs named after backend modules ("Phase 3:
+  Matcher & EV Ranker") — the user found it unusable ("what are that 15
+  buttons why i will click them"). Replaced with a 6-item sidebar (Profile
+  & LinkedIn, Job Matches, Applications, Referrals, Interview Prep,
+  Calendar & Integrations) plus a global "Needs your review" inbox where
+  every send/apply/schedule action still requires explicit human
+  approve/reject — that gating is a standing user decision, not a default,
+  see "Recommended next steps" history below. Spec:
+  `docs/superpowers/specs/2026-08-12-workflow-dashboard-design.md`. Plan
+  (has exact code for every file, useful if this needs touching again):
+  `docs/superpowers/plans/2026-08-12-workflow-dashboard.md`. Built via 10
+  tasks across 2 waves of parallel subagents — worked cleanly; the only
+  friction was 3 agents racing on the same `jobos/api/main.py` file for
+  independent endpoint additions, which git handled fine (each agent's
+  intended diff survived, verified by rereading the file and rerunning the
+  full suite — 359 passed) but cost some agent turns re-checking "is my
+  diff still mine."
+- **Google Drive integration + real cold-apply form-filling** (`148b892`).
+  `jobos/integrations/drive.py` uploads tailored resumes to a
+  `JOBOS Resumes` Drive folder via Composio. `jobos/cold_apply/executor.py`
+  uses real Playwright to fill a real application form and screenshot it —
+  **it never clicks Submit, under any circumstance, including after human
+  approval in the dashboard.** This was an explicit user decision (asked via
+  AskUserQuestion: "Review, then I approve each one" over full autonomy) —
+  do not build an auto-submit path without that conversation happening
+  again. Finishing the actual submission is the operator's own action in
+  their own browser; the artifact this produces (filled fields +
+  screenshot) is the deliverable.
+- **4 new API endpoints** (`b2b2556`, `fcd1e24`, `bbc079e`): pending-actions
+  list + reject (backs the review inbox), LinkedIn export upload (HTTP
+  wrapper around the CLI-only importer), resume-generate (HTTP wrapper
+  around `stage_upload_resume`). All have integration tests — see
+  "`jobos/api/main.py` has zero test coverage" below, which is now
+  partially, not fully, stale.
+- **Seed company ATS tokens fixed** (`2689f4a`). The previous "3 of 8
+  broken" claim below undercounted: verified live against the exact request
+  pattern `jobos/ingestion/poller.py` uses, 7 of 8 original entries were
+  dead (404, or 200-with-zero-jobs for a since-abandoned tenant). Replaced
+  with 4 verified-live boards: Postman, Groww, CRED, Meesho. If re-adding a
+  company, verify the same way — hit the real endpoint and check it returns
+  that company's actual jobs, not just a 200; a wrong-but-live token risks
+  silently seeding a different company's postings under this one's name.
 
 ### What is explicitly NOT implemented (raises `NotImplementedError`, on purpose)
 
-- **Cold apply** (`jobos/cold_apply/executor.py`) — Playwright browser
-  automation. Refuses rather than claiming a submission that never happened.
 - **GCP KMS** (`jobos/vault/kms.py`) — AWS KMS is implemented; GCP raises.
   Shipping a silent stub here would mean tenant DEKs were never wrapped.
 - **LinkedIn publishing** (`jobos/runner/handlers.py::publish_post`) — no
   Composio LinkedIn connection wired up yet.
+- **Cold-apply auto-submit** — see above. This is a deliberate, standing
+  product decision (human approves every application), not a gap to close.
 
 ### What is NOT done and is the biggest real gap
 
@@ -85,8 +129,10 @@ Full product framing: [`README.md`](README.md).
   `X-Tenant-Id` is ignored outright. Mint with
   `jobos --user-id <uuid> token create --name browser`; the dashboard has a
   paste-once login screen. `/health` stays public.
-  Remaining caveats: tokens never expire (revoke by name to kill one), and
-  there is no rate limiting on the auth endpoint.
+  **Auth hardening (token expiry, rate limiting on failed auth, audit
+  trail) was in progress via a background agent as this doc was last
+  updated — check `git log` for commits after `2689f4a` mentioning "auth"
+  before assuming this is still open.**
 - ~~**No LLM path has been run against a real model.**~~ **Code-level fix
   done** (`b880b68`) — key wiring was the actual bug (see above), verified
   down to a real rejected call from Groq's live API. Still blocked on the
@@ -95,17 +141,14 @@ Full product framing: [`README.md`](README.md).
   mocked responses only until that happens.
 - **No real LinkedIn export has been imported.** The importer
   (`jobos/onboarding/linkedin_import.py`) is built and tested against a
-  synthetic fixture ZIP, but the user's real export hasn't landed yet.
-- **`jobos/api/main.py` has zero test coverage.** It was rewritten twice by
-  a concurrent session and once by me this session; none of those changes
-  added tests. Every "real" claim above about the API was verified by manual
-  `curl` + a browser screenshot, not by an automated test. This is a real
-  gap — add integration tests for this file next time it's touched.
-- **3 of 8 seed companies have wrong ATS board tokens**
-  (`data/seed_companies.yaml`: Chargebee, Zoho, Swiggy all 404 against their
-  listed `ats_identifier`). The ingestion worker degrades correctly (skips
-  the failure, continues the cycle) but those 3 companies currently
-  contribute zero jobs. Fix by finding the correct board slug for each.
+  synthetic fixture ZIP, and now also reachable from the dashboard's
+  Profile page via upload, but the user's real export hasn't landed yet.
+- **`jobos/api/main.py` test coverage is partial, not zero.** The 4 newest
+  endpoints (pending-actions, reject, linkedin-import, generate-resume) have
+  integration tests. Older endpoints (stats, jobs, comp, content, profile,
+  security/status, career-graph/summary, warmpath/races, shadow-mode,
+  onboarding/wizard) still don't — every "real" claim about those was
+  verified by manual `curl`/browser screenshot, not an automated test.
 
 ---
 
@@ -206,35 +249,31 @@ source .venv/bin/activate
    this is now purely a credential problem. `JOBOS_LLM_PLATFORM_GROQ_KEY=`
    in `.env` — never paste the key value into a chat session, type it
    directly into the file. Then `jobos --user-id <uuid> run` end to end.
-2. **Google Drive + broader Google-account scope — user asked for this,
-   not yet built, needs a scoping decision first.** User wants: resumes
-   generated and saved to their Google Drive, applications sent from their
-   own Gmail, and "excellent at applying jobs and setting interviews"
-   end-to-end. What exists: Gmail send (Composio, guarded by suppression +
-   daily cap + shadow mode), Calendar client (`jobos/integrations/calendar.py`).
-   What doesn't: Drive integration at all, and — the one that needs a real
-   decision, not just code — autonomous job *submission*. Cold apply
-   (`jobos/cold_apply/executor.py`) is deliberately unimplemented; building
-   it means Playwright driving real ATS forms on real employer sites, which
-   is both the highest-risk unverified action in this codebase (many ATS
-   platforms fingerprint and ban bot-submitted applications — doing this
-   wrong could hurt the user's actual applications) and something the user
-   must explicitly choose the risk posture for (autonomous vs.
-   review-then-approve, which is what shadow mode already defaults every
-   other outbound action to). Do not build unattended auto-submit without
-   that conversation happening first.
-   Also: "read the user's LinkedIn connections live" is not the same ask as
-   already-built — the importer reads LinkedIn's own data *export* (a file
-   the user downloads themselves); there is no live LinkedIn API path that
-   can read a profile or connections, and building a scraper is explicitly
-   out of scope (account-ban risk, ToS violation) — this was already
-   explained to the user earlier in this session and holds.
-3. **Fix the 3 broken seed company board tokens** in
-   `data/seed_companies.yaml` (Chargebee, Zoho, Swiggy all 404).
-4. **Dashboard**: reconcile the remaining static "phase explainer" panels
-   (Phase 1, 2, 4-15 tabs) — right now only Phase 0's stat tiles read real
-   data; the rest are documentation-style placeholders with hardcoded sample
-   calculations, not live views.
-5. **Auth hardening** (the basics are done, these are the follow-ups):
-   token expiry, rate limiting on failed auth, and an audit trail of token
-   use beyond `last_used_at`.
+   **Blocked on the user, not on code — nothing to build here.**
+2. **Get the user's real LinkedIn export imported.** The upload path exists
+   now (dashboard Profile page, or `jobos import --linkedin-zip <path>`);
+   nobody has run it against real data yet. Also blocked on the user, not
+   code.
+3. **Verify live Composio OAuth connections**, not just that a key is
+   configured. `GET /api/integrations/status` today only reports whether
+   `COMPOSIO_API_KEY` is set — it cannot tell you whether the user has
+   actually completed the Gmail/Drive/Calendar OAuth flow for their
+   account. Confirming that needs either a live Composio API call in that
+   endpoint, or the user completing the connection UI and someone checking
+   Composio's dashboard directly.
+4. **Finish auth hardening if the in-flight agent didn't complete it** —
+   check `git log` first (see the note under "Auth" above). If still open:
+   token expiry, rate limiting on failed auth attempts, an audit trail of
+   token use beyond `last_used_at`.
+5. **Expand `jobos/api/main.py` test coverage** to the older endpoints
+   listed above (stats, jobs, comp, content, profile, security/status,
+   career-graph/summary, warmpath/races, shadow-mode, onboarding/wizard) —
+   the pattern from `tests/integration/test_api_execute_action.py` /
+   `test_generate_resume_endpoint.py` / `test_linkedin_upload_endpoint.py`
+   is established and easy to repeat per-endpoint.
+6. **Re-add the dashboard's top metrics strip somewhere**, or decide
+   deliberately not to. The new workflow-sidebar dashboard (see above)
+   dropped the Jobs Tracked / Applications Sent / Interviews Scheduled /
+   RLS Rules stat tiles — they had no natural home in the new 6-section IA
+   and weren't in the approved spec, so they were cut rather than force-fit
+   somewhere. Flagged to the user; no decision made yet as of this writing.
