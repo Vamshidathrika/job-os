@@ -1,6 +1,6 @@
 # JOBOS — Handoff / Project State
 
-**Last updated:** 2026-08-12, by Claude (session covering commits `148b892` → `2689f4a`, plus an in-flight auth-hardening agent not yet landed — check `git log --oneline -5` before trusting the auth section below)
+**Last updated:** 2026-08-12, by Claude (session covering commits `148b892` → `7d909c0`)
 
 Read this before touching the repo. It exists because **multiple agent
 sessions have worked on this codebase concurrently and at least once directly
@@ -21,10 +21,8 @@ Full product framing: [`README.md`](README.md).
 
 ## Where things stand right now
 
-**359 tests passing** as of `2689f4a` (before the auth-hardening agent's new
-tests land — re-run and update this number once they do).
-`python -m pytest tests/ -q` from repo root (`.venv` must be active, see
-Environment below).
+**365 tests passing** as of `7d909c0`. `python -m pytest tests/ -q` from
+repo root (`.venv` must be active, see Environment below).
 
 ### What is real and working end-to-end
 
@@ -129,10 +127,12 @@ Environment below).
   `X-Tenant-Id` is ignored outright. Mint with
   `jobos --user-id <uuid> token create --name browser`; the dashboard has a
   paste-once login screen. `/health` stays public.
-  **Auth hardening (token expiry, rate limiting on failed auth, audit
-  trail) was in progress via a background agent as this doc was last
-  updated — check `git log` for commits after `2689f4a` mentioning "auth"
-  before assuming this is still open.**
+  ~~**Auth hardening**~~ **Done** (`80453f2`, `5997ce9`, `7d909c0`):
+  `create_token(..., expires_in_days=...)` for optional expiry;
+  `jobos/vault/auth_rate_limit.py` blocks an IP after 5 failed attempts in
+  15 minutes (persisted count, not in-memory); every `resolve_tenant()`
+  call — success or failure — writes a row to `api_token_audit` (hash only,
+  never plaintext).
 - ~~**No LLM path has been run against a real model.**~~ **Code-level fix
   done** (`b880b68`) — key wiring was the actual bug (see above), verified
   down to a real rejected call from Groq's live API. Still blocked on the
@@ -261,17 +261,13 @@ source .venv/bin/activate
    account. Confirming that needs either a live Composio API call in that
    endpoint, or the user completing the connection UI and someone checking
    Composio's dashboard directly.
-4. **Finish auth hardening if the in-flight agent didn't complete it** —
-   check `git log` first (see the note under "Auth" above). If still open:
-   token expiry, rate limiting on failed auth attempts, an audit trail of
-   token use beyond `last_used_at`.
-5. **Expand `jobos/api/main.py` test coverage** to the older endpoints
+4. **Expand `jobos/api/main.py` test coverage** to the older endpoints
    listed above (stats, jobs, comp, content, profile, security/status,
    career-graph/summary, warmpath/races, shadow-mode, onboarding/wizard) —
    the pattern from `tests/integration/test_api_execute_action.py` /
    `test_generate_resume_endpoint.py` / `test_linkedin_upload_endpoint.py`
    is established and easy to repeat per-endpoint.
-6. **Re-add the dashboard's top metrics strip somewhere**, or decide
+5. **Re-add the dashboard's top metrics strip somewhere**, or decide
    deliberately not to. The new workflow-sidebar dashboard (see above)
    dropped the Jobs Tracked / Applications Sent / Interviews Scheduled /
    RLS Rules stat tiles — they had no natural home in the new 6-section IA
