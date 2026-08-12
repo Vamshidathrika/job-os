@@ -76,6 +76,12 @@ CREATE INDEX IF NOT EXISTS api_tokens_hash_active_idx
     ON api_tokens (token_hash) WHERE revoked_at IS NULL;
 """
 
+# Optional expiry, added after the initial api_tokens table. NULL means the
+# token never expires — the same behavior as before this column existed.
+API_TOKENS_EXPIRES_AT_DDL = """
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+"""
+
 SUPPRESSION_LIST_DDL = """
 CREATE TABLE IF NOT EXISTS suppression_list (
     email_hash text PRIMARY KEY,
@@ -336,4 +342,5 @@ ALL_DDL = [
     # After USERS_DDL: api_tokens has a foreign key to users(id).
     API_TOKENS_DDL,
     API_TOKENS_INDEX_DDL,
+    API_TOKENS_EXPIRES_AT_DDL,
 ]

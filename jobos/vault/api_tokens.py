@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -40,7 +41,9 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-async def create_token(conn: Any, user_id: str, name: str) -> str:
+async def create_token(
+    conn: Any, user_id: str, name: str, expires_in_days: int | None = None
+) -> str:
     """Mint a token for a tenant and return the plaintext, once.
 
     The plaintext is never stored and cannot be recovered — if it is lost,
@@ -50,6 +53,10 @@ async def create_token(conn: Any, user_id: str, name: str) -> str:
         conn: A connection; api_tokens has no RLS (see jobos/db/models.py).
         user_id: The tenant this token acts as.
         name: Human label, e.g. "vamshi laptop", so it can be revoked by sight.
+        expires_in_days: If given, the token stops resolving after this many
+            days (a negative value produces an already-expired token, useful
+            for tests). Default is None — the token never expires, matching
+            the behavior before this parameter existed.
 
     Returns:
         The plaintext token, prefixed for recognisability in logs and configs.
@@ -58,20 +65,27 @@ async def create_token(conn: Any, user_id: str, name: str) -> str:
         raise ValueError("A token name is required so it can be revoked later")
 
     token = f"{TOKEN_PREFIX}{secrets.token_urlsafe(TOKEN_SECRET_BYTES)}"
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+        if expires_in_days is not None
+        else None
+    )
 
     await conn.execute(
         """
-        INSERT INTO api_tokens (user_id, token_hash, name)
-        VALUES ($1::uuid, $2, $3)
+        INSERT INTO api_tokens (user_id, token_hash, name, expires_at)
+        VALUES ($1::uuid, $2, $3, $4)
         ON CONFLICT (user_id, name) DO UPDATE
             SET token_hash = EXCLUDED.token_hash,
                 created_at = now(),
                 last_used_at = NULL,
-                revoked_at = NULL
+                revoked_at = NULL,
+                expires_at = EXCLUDED.expires_at
         """,
         user_id,
         _hash(token),
         name,
+        expires_at,
     )
     logger.info("api_token_created", user_id=user_id, name=name)
     return token
@@ -94,6 +108,7 @@ async def resolve_tenant(conn: Any, token: str) -> str:
         UPDATE api_tokens
         SET last_used_at = now()
         WHERE token_hash = $1 AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
         RETURNING user_id
         """,
         _hash(candidate),

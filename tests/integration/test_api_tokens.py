@@ -112,3 +112,26 @@ async def test_resolving_records_last_used(db_pool, tenant_a_id):
         await resolve_tenant(conn, token)
 
         assert (await list_tokens(conn, str(tenant_a_id)))[0]["last_used_at"] is not None
+
+
+async def test_expired_token_is_rejected(db_pool, tenant_a_id):
+    """An already-expired token must fail exactly like an unknown/revoked one."""
+    async with db_pool.acquire() as conn:
+        token = await create_token(conn, str(tenant_a_id), name="laptop", expires_in_days=-1)
+
+        with pytest.raises(InvalidTokenError):
+            await resolve_tenant(conn, token)
+
+
+async def test_token_with_no_expiry_still_resolves(db_pool, tenant_a_id):
+    async with db_pool.acquire() as conn:
+        token = await create_token(conn, str(tenant_a_id), name="laptop", expires_in_days=None)
+
+        assert await resolve_tenant(conn, token) == str(tenant_a_id)
+
+
+async def test_token_with_future_expiry_still_resolves(db_pool, tenant_a_id):
+    async with db_pool.acquire() as conn:
+        token = await create_token(conn, str(tenant_a_id), name="laptop", expires_in_days=30)
+
+        assert await resolve_tenant(conn, token) == str(tenant_a_id)
