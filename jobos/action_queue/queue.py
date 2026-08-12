@@ -143,6 +143,47 @@ class ActionQueue:
         )
         logger.info("action_escalated_to_band_c", action_id=action_id)
 
+    async def list_pending(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Read-only listing of every pending action, any band or type.
+
+        Unlike dequeue_batch, this never claims rows (no UPDATE) — it backs
+        a review inbox a human just looks at, and looking must not change
+        what a worker later picks up.
+        """
+        rows = await self.conn.fetch(
+            """
+            SELECT id, action_type, payload, band, status, created_at
+            FROM action_queue
+            WHERE status = 'pending'
+            ORDER BY created_at
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [
+            {
+                "action_id": str(row["id"]),
+                "action_type": row["action_type"],
+                "payload": json.loads(row["payload"]),
+                "band": row["band"],
+                "status": row["status"],
+                "tenant_id": self.tenant_id,
+            }
+            for row in rows
+        ]
+
+    async def mark_rejected(self, action_id: str) -> None:
+        """A human declined this action. It must never be picked up again."""
+        await self.conn.execute(
+            """
+            UPDATE action_queue
+            SET status = 'rejected', updated_at = now()
+            WHERE id = $1
+            """,
+            uuid.UUID(action_id),
+        )
+        logger.info("action_rejected", action_id=action_id)
+
     async def count_actions_since(self, action_type: str, days: int = 1) -> int:
         """Count non-failed actions of a type in the recent window.
 

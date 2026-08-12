@@ -107,3 +107,44 @@ async def test_execute_without_a_token_is_rejected(tenant_a_conn, tenant_a_id, d
         response = await client.post(f"/api/actions/{action_id}/execute")
 
     assert response.status_code == 401
+
+
+async def test_list_pending_actions_across_bands(tenant_a_conn, tenant_a_id, db_pool):
+    from jobos.action_queue.queue import ActionQueue
+
+    queue = ActionQueue(conn=tenant_a_conn, tenant_id=str(tenant_a_id))
+    await queue.enqueue("referral_touch", {"to": "a@b.com"}, band="A")
+    await queue.enqueue("submit_application", {"job_url": FIXTURE_URL}, band="B")
+
+    client, token = await _client_and_token(db_pool, tenant_a_id)
+    async with client:
+        response = await client.get(
+            "/api/actions?status=pending", headers={"Authorization": f"Bearer {token}"}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    assert {a["action_type"] for a in body} == {"referral_touch", "submit_application"}
+
+
+async def test_reject_action_marks_rejected_and_leaves_it_unexecuted(
+    tenant_a_conn, tenant_a_id, db_pool
+):
+    from jobos.action_queue.queue import ActionQueue
+
+    queue = ActionQueue(conn=tenant_a_conn, tenant_id=str(tenant_a_id))
+    action_id = await queue.enqueue("referral_touch", {"to": "a@b.com"}, band="A")
+
+    client, token = await _client_and_token(db_pool, tenant_a_id)
+    async with client:
+        response = await client.post(
+            f"/api/actions/{action_id}/reject", headers={"Authorization": f"Bearer {token}"}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"action_id": action_id, "status": "rejected"}
+    row = await tenant_a_conn.fetchrow(
+        "SELECT status FROM action_queue WHERE id = $1::uuid", action_id
+    )
+    assert row["status"] == "rejected"

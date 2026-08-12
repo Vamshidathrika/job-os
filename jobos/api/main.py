@@ -272,8 +272,15 @@ async def get_timeline(
     return await get_activity_timeline(conn, tenant_id=tenant, days=days)
 
 @app.get("/api/actions")
-async def list_actions(band: str = "A", tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)) -> list[dict[str, Any]]:
+async def list_actions(
+    band: str = "A",
+    status: str | None = None,
+    tenant: str = Depends(authenticated_tenant),
+    conn: Any = Depends(tenant_db),
+) -> list[dict[str, Any]]:
     queue = ActionQueue(conn=conn, tenant_id=tenant)
+    if status == "pending":
+        return await queue.list_pending(limit=50)
     return await queue.dequeue_batch(band=band, limit=20)
 
 @app.post("/api/actions/{action_id}/execute")
@@ -316,6 +323,20 @@ async def execute_action(action_id: str, tenant: str = Depends(authenticated_ten
 
     await queue.mark_complete(action_id=action_id, result=result)
     return {"action_id": action_id, "status": "completed", "result": result}
+
+@app.post("/api/actions/{action_id}/reject")
+async def reject_action(
+    action_id: str, tenant: str = Depends(authenticated_tenant), conn: Any = Depends(tenant_db)
+) -> dict[str, Any]:
+    """A human declined this from the review inbox — mark it rejected without
+    running its handler. Symmetric with execute_action's approve path."""
+    row = await conn.fetchrow("SELECT id FROM action_queue WHERE id = $1::uuid", action_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No action {action_id!r}")
+
+    queue = ActionQueue(conn=conn, tenant_id=tenant)
+    await queue.mark_rejected(action_id=action_id)
+    return {"action_id": action_id, "status": "rejected"}
 
 @app.post("/api/interview/prep")
 async def generate_prep(req: InterviewPrepReq) -> dict[str, Any]:
