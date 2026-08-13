@@ -123,7 +123,18 @@ async def run_matching(conn: Any, user_id: str, limit: int = 500) -> dict[str, i
         if contacts and company_names
         else []
     )
-    warm_companies = {w["matched_target_company"] for w in warm_leads if w.get("email")}
+    # map_existing_network's FUZZY_MATCH_THRESHOLD (0.5) is tuned for outreach
+    # discovery (jobos/runner/warm_paths.py), where a fuzzy false positive
+    # just wastes an outreach attempt — cheap. Tiering is different: a false
+    # positive here promotes a job to Tier 1 and can defer a cold application
+    # by up to 7 days waiting on a referral that doesn't actually exist. So
+    # for has_warm_contact specifically, require an exact core-name match
+    # (match_score == 1.0 — see network_mapper._similarity's fast path)
+    # rather than the general fuzzy threshold. This does not change
+    # map_existing_network itself or its threshold, so warm_paths.py's
+    # existing fuzzy-matching behavior for outreach discovery is untouched.
+    exact_warm_leads = [w for w in warm_leads if w.get("match_score") == 1.0]
+    warm_companies = {w["matched_target_company"] for w in exact_warm_leads if w.get("email")}
 
     scored = tier_1 = 0
     for job in jobs:

@@ -112,3 +112,75 @@ async def test_warm_contact_pulls_a_marginal_job_into_tier_1(tenant_a_conn, tena
     # company with a warm contact clears Tier 1 and the one without doesn't.
     assert warm_row["tier"] == 1, f"expected Warmco job in Tier 1, got {warm_row['tier']}"
     assert cold_row["tier"] == 2, f"expected Coldco job in Tier 2, got {cold_row['tier']}"
+
+
+async def test_fuzzy_but_not_exact_company_match_does_not_grant_tier_1(
+    tenant_a_conn, tenant_a_id, db_pool, mocker
+):
+    """A fuzzy company-name match that clears map_existing_network's general
+    FUZZY_MATCH_THRESHOLD (0.5) but is not an exact core-name match must NOT
+    set has_warm_contact for tiering purposes.
+
+    Before this, a fuzzy false positive in warm-contact matching could
+    incorrectly promote a job to Tier 1 and defer a cold application by up
+    to 7 days waiting on a referral that doesn't actually exist. Fuzzy
+    matching stays fine for jobos/runner/warm_paths.py's outreach-discovery
+    use (a bad candidate there just gets filtered out later) — this test is
+    specifically about the tiering signal computed in
+    jobos/matcher/pipeline.py.
+
+    "Acme" (contact company) vs "Acme Bank" (job company) is Jaccard 0.5 —
+    it clears the general threshold but is not an exact core-name match, so
+    it must not grant Tier 1. "Globex" (contact company) vs "Globex" (job
+    company) is an exact match and must grant Tier 1.
+    """
+    for company in ("Acme", "Globex", "Initech"):
+        await tenant_a_conn.execute(
+            "INSERT INTO cg_bullets (id, user_id, company, role, bullet_text, verification_status) "
+            "VALUES (gen_random_uuid(), $1::uuid, $2, 'Engineer', 'Built things in Python', 'verified')",
+            tenant_a_id, company,
+        )
+    mocker.patch("jobos.matcher.pipeline.compute_similarity", return_value=_PINNED_MATCH_SCORE)
+
+    fuzzy_job_id = await _seed_job(db_pool, "Acme Bank", "warm-tiering-test-fuzzy")
+    exact_job_id = await _seed_job(db_pool, "Globex", "warm-tiering-test-exact")
+
+    # A contact whose company name only fuzzy-matches the job's company.
+    await tenant_a_conn.execute(
+        "INSERT INTO people (id, user_id, full_name, company_domain, email, title, source) "
+        "VALUES (gen_random_uuid(), $1::uuid, 'Fuzzy Contact', 'Acme', 'fuzzy@example.com', "
+        "'Engineer', 'linkedin_connection')",
+        tenant_a_id,
+    )
+    # A contact whose company name exactly matches the job's company.
+    await tenant_a_conn.execute(
+        "INSERT INTO people (id, user_id, full_name, company_domain, email, title, source) "
+        "VALUES (gen_random_uuid(), $1::uuid, 'Exact Contact', 'Globex', 'exact@example.com', "
+        "'Engineer', 'linkedin_connection')",
+        tenant_a_id,
+    )
+
+    counts = await run_matching(tenant_a_conn, str(tenant_a_id))
+    assert counts["scored"] == 2
+
+    fuzzy_row = await tenant_a_conn.fetchrow(
+        "SELECT ev_score, tier FROM matches WHERE user_id = $1::uuid AND job_id = $2",
+        tenant_a_id, fuzzy_job_id,
+    )
+    exact_row = await tenant_a_conn.fetchrow(
+        "SELECT ev_score, tier FROM matches WHERE user_id = $1::uuid AND job_id = $2",
+        tenant_a_id, exact_job_id,
+    )
+    assert fuzzy_row is not None and exact_row is not None
+
+    # Sanity: both jobs land in the ev_score band where has_warm_contact is
+    # the only thing that can decide the tier.
+    assert 0.40 <= fuzzy_row["ev_score"] < 0.60
+    assert 0.40 <= exact_row["ev_score"] < 0.60
+
+    assert fuzzy_row["tier"] == 2, (
+        f"fuzzy-only company match must not grant Tier 1, got {fuzzy_row['tier']}"
+    )
+    assert exact_row["tier"] == 1, (
+        f"exact company match must grant Tier 1, got {exact_row['tier']}"
+    )
