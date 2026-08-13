@@ -17,6 +17,7 @@ from jobos.ingestion.embedder import generate_embedding
 from jobos.matcher.ev_ranker import calculate_ev
 from jobos.matcher.scorer import compute_requirement_match, compute_similarity
 from jobos.matcher.tier_gate import classify_tier
+from jobos.referral.network_mapper import map_existing_network
 
 logger = structlog.get_logger(__name__)
 
@@ -91,14 +92,38 @@ async def run_matching(conn: Any, user_id: str, limit: int = 500) -> dict[str, i
 
     jobs = await conn.fetch(
         """
-        SELECT j.id, j.title, j.description, j.location, j.embedding
+        SELECT j.id, j.title, j.description, j.location, j.embedding, c.name AS company_name
           FROM jobs j
+          LEFT JOIN companies c ON c.id = j.company_id
          WHERE j.embedding IS NOT NULL
          ORDER BY j.first_seen_at DESC
          LIMIT $1
         """,
         limit,
     )
+
+    # Warm-contact detection is computed once for the whole run (pure
+    # in-memory fuzzy matching, no new I/O per job) rather than per-job in
+    # the loop below — see docs/superpowers/plans/
+    # 2026-08-12-matching-relevance-fixes.md Task 2 for why: referred
+    # applicants convert 4-10x better than cold applies, so classify_tier
+    # needs to know which jobs have a real warm connection at the company.
+    contacts = [
+        dict(row)
+        for row in await conn.fetch(
+            "SELECT full_name, company_domain, email, title, source FROM people WHERE user_id = $1::uuid",
+            user_id,
+        )
+    ]
+    company_names = list({j["company_name"] for j in jobs if j["company_name"]})
+    warm_leads = (
+        await map_existing_network(
+            [{**c, "company": c["company_domain"]} for c in contacts], company_names
+        )
+        if contacts and company_names
+        else []
+    )
+    warm_companies = {w["matched_target_company"] for w in warm_leads if w.get("email")}
 
     scored = tier_1 = 0
     for job in jobs:
@@ -115,7 +140,11 @@ async def run_matching(conn: Any, user_id: str, limit: int = 500) -> dict[str, i
         # ev_score drives tiering, and measures value only — see the note on
         # COMP_REFERENCE_INR for why it must not re-embed match_score.
         ev_score = min(1.0, (band["p50"] * DEFAULT_P_ACCEPT) / COMP_REFERENCE_INR)
-        tier = classify_tier(match_score=score, ev_score=ev_score)
+        tier = classify_tier(
+            match_score=score,
+            ev_score=ev_score,
+            has_warm_contact=job["company_name"] in warm_companies,
+        )
 
         hard_reqs_raw = await conn.fetchval(
             "SELECT hard_reqs FROM job_requirements WHERE job_id = $1", job["id"]

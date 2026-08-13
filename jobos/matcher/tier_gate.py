@@ -7,35 +7,40 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-def classify_tier(match_score: float, ev_score: float, company_tier: int = 2) -> int:
+def classify_tier(match_score: float, ev_score: float, has_warm_contact: bool = False) -> int:
     """
-    Classifies jobs into Tier 1, Tier 2, or Tier 3 based on match score and expected value.
-    
-    Tier 1: match_score >= 0.65 and ev_score >= 0.60 (High EV -> triggers 7-Day Warm Path Race).
-    Tier 2: match_score >= 0.50 (Standard application).
-    Tier 3: Low EV / low score (Auto-filtered or Band A cold apply).
-    
+    Tier 1 (triggers the 7-day warm-path race): match_score >= 0.65 and
+    ev_score >= 0.60 OR, when a real warm connection exists at the company,
+    the lower bar match_score >= 0.50 and ev_score >= 0.40 — referred
+    applicants convert at 4-10x cold applies, so a real connection is worth
+    more than marginal comp/similarity headroom (see docs/superpowers/plans/
+    2026-08-12-matching-relevance-fixes.md for the evidence this is based on).
+    Tier 2: match_score >= 0.50 (no warm path). Tier 3: everything else.
+
     Args:
         match_score: The calculated match score for the job and candidate.
         ev_score: The expected value score.
-        company_tier: The tier of the company (default 2).
-        
+        has_warm_contact: Whether the user has a real warm connection at the
+            hiring company (see jobos.referral.network_mapper.map_existing_network).
+
     Returns:
         int: The classification tier (1, 2, or 3).
     """
-    if match_score >= 0.65 and ev_score >= 0.60:
+    if has_warm_contact and match_score >= 0.50 and ev_score >= 0.40:
+        tier = 1
+    elif match_score >= 0.65 and ev_score >= 0.60:
         tier = 1
     elif match_score >= 0.50:
         tier = 2
     else:
         tier = 3
-        
+
     logger.debug(
-        "Classified job tier",
+        "classified_job_tier",
         match_score=match_score,
         ev_score=ev_score,
-        company_tier=company_tier,
-        assigned_tier=tier
+        has_warm_contact=has_warm_contact,
+        assigned_tier=tier,
     )
-    
+
     return tier
