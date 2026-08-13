@@ -7,6 +7,7 @@ SQL, casts and conflict handling are all exercised for real.
 """
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -143,3 +144,57 @@ async def test_embedding_width_mismatch_is_counted_as_failure(db_pool, seeded_co
 
     assert result["ingested"] == 0
     assert result["failed"] >= 1
+
+
+async def test_ingestion_cycle_persists_extracted_hard_requirements(db_pool, seeded_company, mocker):
+    """The extraction call added in global_ingestion.py (Task 1) must actually
+    populate job_requirements on the success path.
+
+    The other tests in this file only exercise extract_hard_requirements's
+    catch-and-swallow failure branch implicitly (Settings() carries no real
+    Groq key, so every acompletion call there fails and is logged, not
+    raised). This test mocks the LLM boundary itself
+    (jobos.ingestion.requirement_extractor.acompletion — the same seam the
+    unit tests in test_requirement_extractor.py use) so the extraction
+    actually succeeds, and asserts the resulting row lands in
+    job_requirements with the expected hard_reqs.
+    """
+    company_id = await seeded_company()
+
+    mocker.patch(
+        "jobos.ingestion.poller.ATSPoller._fetch_with_retry",
+        return_value=GREENHOUSE_PAYLOAD,
+    )
+    mocker.patch(
+        "jobos.workers.global_ingestion.generate_embedding",
+        return_value=[0.01] * EMBEDDING_DIM,
+    )
+    mock_response = mocker.MagicMock()
+    mock_response.choices = [
+        mocker.MagicMock(
+            message=mocker.MagicMock(content='{"hard_requirements": ["Python", "Kubernetes"]}')
+        )
+    ]
+    mocker.patch(
+        "jobos.ingestion.requirement_extractor.acompletion",
+        AsyncMock(return_value=mock_response),
+    )
+
+    worker = GlobalIngestionWorker(pool=db_pool, settings=Settings())
+    result = await worker.run_cycle()
+
+    assert result["ingested"] == 1
+
+    async with db_pool.acquire() as conn:
+        job_id = await conn.fetchval(
+            "SELECT id FROM jobs WHERE company_id = $1 AND external_id = $2",
+            company_id,
+            "999",
+        )
+        row = await conn.fetchrow(
+            "SELECT hard_reqs FROM job_requirements WHERE job_id = $1", job_id
+        )
+
+    assert row is not None, "job_requirements row was not persisted"
+    assert "Python" in row["hard_reqs"]
+    assert "Kubernetes" in row["hard_reqs"]

@@ -214,8 +214,11 @@ CREATE TABLE IF NOT EXISTS matches (
 # Added after the initial matches table: persists compute_requirement_match's
 # output (jobos/matcher/scorer.py) so a candidate sees specifically which
 # hard requirements they're missing, not just a similarity number. Both
-# nullable — rows scored before this existed, or jobs with no
-# job_requirements row, leave them NULL rather than a fake 0/1.0.
+# nullable — run_matching always computes and sets them (a job with no
+# job_requirements row legitimately scores 1.0/[] via
+# compute_requirement_match's no-hard-reqs case, not NULL). NULL only
+# persists on matches rows written before this migration that never get
+# rescored.
 MATCHES_SKILL_COVERAGE_DDL = """
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS skill_coverage float;
 """
