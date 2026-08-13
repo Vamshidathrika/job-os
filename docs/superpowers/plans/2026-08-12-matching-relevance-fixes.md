@@ -17,7 +17,7 @@
 
 ---
 
-### Step 1: Hard-requirement extraction and skill-gap scoring
+### Task 1: Hard-requirement extraction and skill-gap scoring
 
 **Files:**
 - Create: `jobos/ingestion/requirement_extractor.py`
@@ -295,7 +295,7 @@ missing instead of just a similarity number."
 
 ---
 
-### Step 2: Warm-connection strength shapes tiering, not just post-hoc race eligibility
+### Task 2: Warm-connection strength shapes tiering, not just post-hoc race eligibility
 
 **Files:**
 - Modify: `jobos/matcher/tier_gate.py` (`classify_tier`: drop `company_tier`, add `has_warm_contact`)
