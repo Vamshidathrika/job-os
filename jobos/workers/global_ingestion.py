@@ -113,18 +113,31 @@ class GlobalIngestionWorker:
                         # job insert above (ingested is already counted), so
                         # it gets its own try/except rather than sharing the
                         # outer one.
+                        #
+                        # run_cycle is re-run repeatedly (every poll
+                        # re-upserts every posting via ON CONFLICT DO
+                        # UPDATE), so extraction must only happen once per
+                        # job — otherwise a stable, unchanged job re-triggers
+                        # a real LLM call on every single ingestion cycle,
+                        # forever.
                         try:
-                            hard_reqs = await extract_hard_requirements(
-                                normalized["description"], self.settings
+                            already_extracted = await conn.fetchval(
+                                "SELECT 1 FROM job_requirements "
+                                "WHERE job_id = $1 AND hard_reqs IS NOT NULL",
+                                job_id,
                             )
-                            if hard_reqs:
-                                await conn.execute(
-                                    "INSERT INTO job_requirements (job_id, hard_reqs) "
-                                    "VALUES ($1, $2::jsonb) "
-                                    "ON CONFLICT (job_id) DO UPDATE SET hard_reqs = EXCLUDED.hard_reqs",
-                                    job_id,
-                                    json.dumps(hard_reqs),
+                            if not already_extracted:
+                                hard_reqs = await extract_hard_requirements(
+                                    normalized["description"], self.settings
                                 )
+                                if hard_reqs:
+                                    await conn.execute(
+                                        "INSERT INTO job_requirements (job_id, hard_reqs) "
+                                        "VALUES ($1, $2::jsonb) "
+                                        "ON CONFLICT (job_id) DO UPDATE SET hard_reqs = EXCLUDED.hard_reqs",
+                                        job_id,
+                                        json.dumps(hard_reqs),
+                                    )
                         except Exception as e:
                             logger.warning(
                                 "requirement_extraction_ingestion_failed",

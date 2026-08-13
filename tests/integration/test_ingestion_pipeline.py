@@ -198,3 +198,46 @@ async def test_ingestion_cycle_persists_extracted_hard_requirements(db_pool, see
     assert row is not None, "job_requirements row was not persisted"
     assert "Python" in row["hard_reqs"]
     assert "Kubernetes" in row["hard_reqs"]
+
+
+async def test_ingestion_cycle_skips_reextraction_when_already_extracted(
+    db_pool, seeded_company, mocker
+):
+    """A stable, unchanged job must not re-trigger the LLM extraction call on
+    every re-poll.
+
+    run_cycle() is designed to be re-run repeatedly (every poll re-upserts
+    every posting via ON CONFLICT DO UPDATE), so an unconditional extraction
+    call after every upsert means every stable job pays for a real Groq call
+    forever, not once. This locks in the idempotency contract: once
+    job_requirements.hard_reqs is populated for a job_id, a later cycle must
+    skip extraction for that job entirely.
+    """
+    await seeded_company()
+
+    mocker.patch(
+        "jobos.ingestion.poller.ATSPoller._fetch_with_retry",
+        return_value=GREENHOUSE_PAYLOAD,
+    )
+    mocker.patch(
+        "jobos.workers.global_ingestion.generate_embedding",
+        return_value=[0.01] * EMBEDDING_DIM,
+    )
+    mock_response = mocker.MagicMock()
+    mock_response.choices = [
+        mocker.MagicMock(
+            message=mocker.MagicMock(content='{"hard_requirements": ["Python", "Kubernetes"]}')
+        )
+    ]
+    mock_acompletion = mocker.patch(
+        "jobos.ingestion.requirement_extractor.acompletion",
+        AsyncMock(return_value=mock_response),
+    )
+
+    worker = GlobalIngestionWorker(pool=db_pool, settings=Settings())
+    await worker.run_cycle()
+    await worker.run_cycle()
+
+    assert mock_acompletion.call_count == 1, (
+        "extraction must run once per job, not on every re-poll of an unchanged job"
+    )
