@@ -211,6 +211,19 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 """
 
+# Added after the initial matches table: persists compute_requirement_match's
+# output (jobos/matcher/scorer.py) so a candidate sees specifically which
+# hard requirements they're missing, not just a similarity number. Both
+# nullable — rows scored before this existed, or jobs with no
+# job_requirements row, leave them NULL rather than a fake 0/1.0.
+MATCHES_SKILL_COVERAGE_DDL = """
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS skill_coverage float;
+"""
+
+MATCHES_MISSING_SKILLS_DDL = """
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS missing_skills jsonb;
+"""
+
 APPLICATIONS_DDL = """
 CREATE TABLE IF NOT EXISTS applications (
     id uuid PRIMARY KEY,
@@ -364,6 +377,8 @@ ALL_DDL = [
     CREDENTIALS_DDL,
     CG_BULLETS_DDL,
     MATCHES_DDL,
+    MATCHES_SKILL_COVERAGE_DDL,
+    MATCHES_MISSING_SKILLS_DDL,
     APPLICATIONS_DDL,
     PEOPLE_DDL,
     REFERRAL_SEQUENCES_DDL,

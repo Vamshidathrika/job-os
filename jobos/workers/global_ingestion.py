@@ -14,6 +14,7 @@ from jobos.db.models import EMBEDDING_DIM
 from jobos.ingestion.poller import ATSPoller
 from jobos.ingestion.normalizer import normalize_job
 from jobos.ingestion.embedder import generate_embedding
+from jobos.ingestion.requirement_extractor import extract_hard_requirements
 
 logger = structlog.get_logger(__name__)
 
@@ -80,7 +81,7 @@ class GlobalIngestionWorker:
 
                         # jobs.id defaults to gen_random_uuid(); jsonb and vector
                         # params must be cast explicitly since both are sent as text.
-                        await conn.execute(
+                        job_id = await conn.fetchval(
                             """
                             INSERT INTO jobs (
                                 company_id, external_id, title, location, country,
@@ -94,6 +95,7 @@ class GlobalIngestionWorker:
                                 raw_json = EXCLUDED.raw_json,
                                 ats_type = EXCLUDED.ats_type,
                                 embedding = EXCLUDED.embedding
+                            RETURNING id
                             """,
                             company_id,
                             normalized["external_id"],
@@ -106,6 +108,29 @@ class GlobalIngestionWorker:
                             json.dumps(embedding),
                         )
                         ingested += 1
+
+                        # Best-effort: a failed extraction must not undo the
+                        # job insert above (ingested is already counted), so
+                        # it gets its own try/except rather than sharing the
+                        # outer one.
+                        try:
+                            hard_reqs = await extract_hard_requirements(
+                                normalized["description"], self.settings
+                            )
+                            if hard_reqs:
+                                await conn.execute(
+                                    "INSERT INTO job_requirements (job_id, hard_reqs) "
+                                    "VALUES ($1, $2::jsonb) "
+                                    "ON CONFLICT (job_id) DO UPDATE SET hard_reqs = EXCLUDED.hard_reqs",
+                                    job_id,
+                                    json.dumps(hard_reqs),
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                "requirement_extraction_ingestion_failed",
+                                job_id=str(job_id),
+                                error=str(e),
+                            )
                     except Exception as e:
                         # One malformed posting must not kill the cycle, but a
                         # swallowed error here previously hid a 100% failure

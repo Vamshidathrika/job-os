@@ -7,6 +7,7 @@ the outcome.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import structlog
@@ -14,7 +15,7 @@ import structlog
 from jobos.comp.predictor import predict_salary_band
 from jobos.ingestion.embedder import generate_embedding
 from jobos.matcher.ev_ranker import calculate_ev
-from jobos.matcher.scorer import compute_similarity
+from jobos.matcher.scorer import compute_requirement_match, compute_similarity
 from jobos.matcher.tier_gate import classify_tier
 
 logger = structlog.get_logger(__name__)
@@ -41,6 +42,15 @@ DEFAULT_P_ACCEPT = 0.85
 # which only fires on Tier 1, could never start. So ev_score measures the
 # value dimension alone: expected comp, normalised. Raw EV is still computed
 # and stored for ranking, which is what it is actually good for.
+
+
+def _skills_from_bullets(bullets: list[dict[str, Any]]) -> list[str]:
+    """Every distinct word/phrase in bullet text — a coarse but real skill
+    surface, since there is no dedicated skills table yet (see the matching
+    relevance plan's Step 1 note on job_requirements being unwritten schema
+    for the same underlying reason: no extraction step existed)."""
+    text = " ".join(b.get("bullet_text") or "" for b in bullets)
+    return [w.strip(",.():;") for w in text.split() if w.strip(",.():;")]
 
 
 def build_profile_text(bullets: list[dict[str, Any]]) -> str:
@@ -107,20 +117,31 @@ async def run_matching(conn: Any, user_id: str, limit: int = 500) -> dict[str, i
         ev_score = min(1.0, (band["p50"] * DEFAULT_P_ACCEPT) / COMP_REFERENCE_INR)
         tier = classify_tier(match_score=score, ev_score=ev_score)
 
+        hard_reqs_raw = await conn.fetchval(
+            "SELECT hard_reqs FROM job_requirements WHERE job_id = $1", job["id"]
+        )
+        hard_reqs = json.loads(hard_reqs_raw) if hard_reqs_raw else []
+        candidate_skills = _skills_from_bullets(bullets)
+        coverage, missing = compute_requirement_match(hard_reqs, candidate_skills)
+
         await conn.execute(
             """
-            INSERT INTO matches (id, user_id, job_id, score, ev_score, tier)
-            VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, $5)
+            INSERT INTO matches (id, user_id, job_id, score, ev_score, tier, skill_coverage, missing_skills)
+            VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, $5, $6, $7::jsonb)
             ON CONFLICT (user_id, job_id) DO UPDATE
                 SET score = EXCLUDED.score,
                     ev_score = EXCLUDED.ev_score,
-                    tier = EXCLUDED.tier
+                    tier = EXCLUDED.tier,
+                    skill_coverage = EXCLUDED.skill_coverage,
+                    missing_skills = EXCLUDED.missing_skills
             """,
             user_id,
             job["id"],
             score,
             ev_score,
             tier,
+            coverage,
+            json.dumps(missing),
         )
         scored += 1
         if tier == 1:
