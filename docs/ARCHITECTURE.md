@@ -6,7 +6,7 @@
 ## 1. Executive Topology & Data Flow
 
 ```
-                                GLOBAL INGESTION WORKER (Single Process)
+                                GLOBAL INGESTION WORKER (Single Process) 
                         ~800 Target Companies via `httpx` (Unauthenticated GETs)
                                                   │
                                                   ▼
